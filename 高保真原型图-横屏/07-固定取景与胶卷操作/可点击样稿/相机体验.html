@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hans"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手绘相机 · 操作样稿</title>
+<link rel="stylesheet" href="camera.css">
+<main class="stage" aria-label="横屏相机">
+  <nav class="quick" aria-label="拍摄快捷设置">
+    <button data-sheet="mode" id="modeButton">普通</button>
+    <button data-sheet="format" id="formatButton">JPG</button>
+    <button data-sheet="ratio" id="ratioButton">16:9</button>
+    <button data-action="flash" id="flashButton" aria-label="闪光">ϟ 关闭</button>
+    <button data-sheet="settings" aria-label="设置">设置</button>
+  </nav>
+  <div class="view" id="view" aria-label="取景">
+    <div class="image-area" id="imageArea">
+      <img id="preview" draggable="false" alt="取景示例">
+      <div class="grid" id="grid" hidden></div>
+      <div class="focus" id="focus" hidden></div>
+      <div class="subject" id="subject" hidden><span>已识别 · 台灯</span></div>
+      <div class="loupe" id="loupe" hidden></div>
+    </div>
+    <div class="mode-mark" id="modeMark" hidden></div>
+    <div class="toast" id="toast" role="status" hidden></div>
+    <div class="flash-frame" id="flashFrame"></div>
+  </div>
+  <nav class="lens" aria-label="焦段">
+    <button data-lens="28">28</button><button data-lens="50">50</button><button data-lens="85">85</button>
+    <span>mm</span>
+  </nav>
+  <nav class="dock" aria-label="拍摄操作">
+    <button class="tile" data-sheet="album"><img id="albumThumb" src="assets/half.png" alt=""><span>相册</span></button>
+    <button class="tile" data-sheet="book"><span class="book-icon" aria-hidden="true">▤</span><span>绘本</span></button>
+    <button class="shutter" data-action="capture" aria-label="拍照"><img src="assets/ink-shutter.png" alt=""></button>
+    <button class="tile stock" data-sheet="film"><span class="mini-can" aria-hidden="true"></span><span id="stockLabel">胶卷</span></button>
+    <button class="tile" data-action="flip"><span class="book-icon" aria-hidden="true">↻</span><span>翻转</span></button>
+  </nav>
+  <section class="sheet" id="sheet" aria-label="抽屉" hidden></section>
+</main>
+<script src="samples.js"></script><script src="camera.js"></script></html>
+

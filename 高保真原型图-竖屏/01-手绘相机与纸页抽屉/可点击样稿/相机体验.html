@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-Hans"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手绘相机 · 竖屏样稿</title>
+<link rel="stylesheet" href="camera.css">
+<main class="stage" aria-label="竖屏相机">
+  <div class="body-line" aria-hidden="true"></div>
+  <header class="heading">
+    <span data-static-icon="camera" aria-hidden="true"></span>
+    <span class="counter" aria-label="累计快门"><span data-static-icon="iso" aria-hidden="true"></span><b id="count">0108</b></span>
+  </header>
+  <nav class="quick" aria-label="拍摄快捷设置">
+    <button data-sheet="mode" id="modeButton" aria-label="拍摄模式"></button>
+    <button data-sheet="format" id="formatButton" aria-label="保存格式"></button>
+    <button data-sheet="ratio" id="ratioButton" aria-label="画幅"><span data-static-icon="aspect" aria-hidden="true"></span><span id="ratioValue">3:4</span></button>
+    <button data-action="flash" id="flashButton" aria-label="闪光"></button>
+    <button data-sheet="settings" aria-label="设置" title="设置"><span data-static-icon="sliders" aria-hidden="true"></span></button>
+  </nav>
+  <div class="film-edge film-edge-top" aria-hidden="true"></div>
+  <div class="view" id="view" aria-label="取景">
+    <div class="image-area" id="imageArea">
+      <img id="preview" draggable="false" alt="取景示例">
+      <div class="grid" id="grid" hidden></div>
+      <div class="focus" id="focus" hidden></div>
+      <div class="subject" id="subject" aria-label="已识别台灯" hidden><span><i data-static-icon="sticker" aria-hidden="true"></i></span></div>
+      <div class="loupe" id="loupe" hidden></div>
+    </div>
+    <div class="mode-mark" id="modeMark" hidden></div>
+    <div class="toast" id="toast" role="status" hidden></div>
+    <div class="flash-frame" id="flashFrame"></div>
+  </div>
+  <div class="film-edge film-edge-bottom" aria-hidden="true"></div>
+  <nav class="lens" aria-label="焦段">
+    <button data-lens="28">28</button><button data-lens="50">50</button><button data-lens="85">85</button>
+    <span>mm</span>
+  </nav>
+  <nav class="dock" aria-label="拍摄操作">
+    <button class="tile album-launcher" data-sheet="album" aria-label="相册" title="相册"><img id="albumThumb" src="assets/half.png" alt=""></button>
+    <button class="tile" data-sheet="book" aria-label="绘本" title="绘本"><span data-static-icon="book" aria-hidden="true"></span></button>
+    <button class="shutter" data-action="capture" aria-label="拍照"><img src="assets/ink-shutter.png" alt=""></button>
+    <button class="tile stock" data-sheet="film" id="filmLauncher" aria-label="胶卷" title="胶卷" aria-controls="sheet" aria-expanded="false"><span class="mini-can" aria-hidden="true"></span><span class="pull-hint" data-static-icon="up" aria-hidden="true"></span><span id="stockLabel" aria-hidden="true">06</span></button>
+    <button class="tile" data-action="flip" aria-label="翻转镜头" title="翻转镜头"><span data-static-icon="rotate" aria-hidden="true"></span></button>
+  </nav>
+  <section class="sheet" id="sheet" aria-label="抽屉" hidden>
+    <button class="paper-pull" id="paperPull" data-act="close" type="button" aria-label="收起" title="收起"><span data-static-icon="down" aria-hidden="true"></span></button>
+    <div id="sheetContent"></div>
+  </section>
+  <div class="home-mark" aria-hidden="true"></div>
+</main>
+<script src="samples.js"></script><script src="icons.js"></script><script src="camera.js"></script></html>
+
+
+
+
+
