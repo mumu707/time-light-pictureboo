@@ -36,11 +36,14 @@ const ui = {
 };
 
 const rolls = window.ROLLS_DATA;
+const customStore = window.CustomRollsStore;
+const allAvailableRolls = () => (window.getAllRolls ? window.getAllRolls() : rolls);
 const categories = {
   fresh: "富士日系",
   cinema: "电影夜景",
   mono: "专业黑白",
-  retro: "玩趣复古"
+  retro: "玩趣复古",
+  custom: "自定义"
 };
 const recommended = ["01", "02", "05", "06", "11", "12", "08"];
 const filmRolls = [
@@ -49,7 +52,9 @@ const filmRolls = [
 ];
 const shortRollNames = {
   "06": "Chrome 64", "13": "Industrial", "18": "Aerocolor", "19": "E100",
-  "24": "Kentmere", "25": "Acros II", "26": "Lomo 400", "27": "Metro", "31": "Half"
+  "24": "Kentmere", "25": "Acros II", "26": "Lomo 400", "27": "Metro", "31": "Half",
+  "33": "Cine 400D", "34": "Phoenix", "35": "LomoPurple", "36": "Astia",
+  "37": "Vista 200", "38": "Ortho 80", "39": "50D", "40": "CyberNeon"
 };
 const formats = CameraPhoto.formats;
 const aspects = { "4:3": .75, "1:1": 1, "16:9": 9 / 16, "65:24": 65 / 24, "半格": .75 };
@@ -66,13 +71,14 @@ const preferences = readPreferences();
 const state = {
   format: Object.hasOwn(formats, preferences.format) ? preferences.format : "JPG",
   ratio: Object.hasOwn(aspects, preferences.ratio) ? preferences.ratio : "4:3",
-  roll: preferences.roll === null ? null : rolls.find(roll => roll.id === preferences.roll) || rolls[0],
+  roll: preferences.roll === null ? null : allAvailableRolls().find(roll => roll.id === preferences.roll) || rolls[0],
   lens: Object.hasOwn(CameraLens.choices, preferences.lens) ? preferences.lens : "normal",
   paper: Object.hasOwn(CameraPaper.choices, preferences.paper) ? preferences.paper : "none",
   favorites: new Set(Array.isArray(preferences.favorites) ? preferences.favorites : []),
   grid: preferences.grid === true,
   timer: preferences.timer === true ? 3 : [3, 10].includes(preferences.timer) ? preferences.timer : 0,
   sound: preferences.sound !== false,
+  autoSaveGallery: preferences.autoSaveGallery !== false,
   category: "film",
   zoom: 1,
   flash: false,
@@ -101,9 +107,9 @@ const cameraStickers = CameraStickers.create(byId("camera-sticker-layer"), stick
 
 function savePreferences() {
   try {
-    const { format, ratio, roll, lens, paper, favorites, grid, timer, sound, front } = state;
+    const { format, ratio, roll, lens, paper, favorites, grid, timer, sound, autoSaveGallery, front } = state;
     localStorage.setItem("shiguang-camera-preferences", JSON.stringify({
-      format, ratio, roll: roll?.id ?? null, lens, paper, favorites: [...favorites], grid, timer, sound, front
+      format, ratio, roll: roll?.id ?? null, lens, paper, favorites: [...favorites], grid, timer, sound, autoSaveGallery, front
     }));
   } catch {
     // The camera remains usable when the browser disallows preference storage.
@@ -254,7 +260,7 @@ function updateView() {
   ui.specialLens.classList.toggle("active", state.lens !== "normal");
   ui.filmOverlay.dataset.vignette = String(state.roll?.vignette || 0);
   ui.filmOverlay.dataset.leak = String((state.roll?.leak && state.roll?.category !== "专业黑白") ? 1 : 0);
-  ui.filmOverlay.dataset.halation = String((state.roll?.id === "16" || state.roll?.id === "14" || state.roll?.id === "32") ? 1 : 0);
+  ui.filmOverlay.dataset.halation = String((state.roll?.halation || state.roll?.id === "16" || state.roll?.id === "14" || state.roll?.id === "32" || state.roll?.id === "33" || state.roll?.id === "34") ? 1 : 0);
   ui.ccdDateStamp.hidden = !state.roll?.isCCD;
   if (state.roll?.isCCD) ui.ccdDateStamp.textContent = formatCcdDate();
   ui.halfStatus.hidden = state.ratio !== "半格";
@@ -519,8 +525,17 @@ async function persistPhoto(source, recipe, ratio, origin) {
     CameraGallery.openUnsaved(photo);
     return;
   }
+  let savedToSystem = false;
+  if (state.autoSaveGallery && window.TimeLightBridge?.saveToSystemGallery) {
+    const ext = recipe.format === "PNG" ? "png" : "jpg";
+    savedToSystem = await window.TimeLightBridge.saveToSystemGallery(
+      photo.blob,
+      `TimeLight-${photo.timestamp}.${ext}`,
+      { silent: true }
+    );
+  }
   void refreshLatest().catch(() => {});
-  toast("已存入相册");
+  toast(savedToSystem ? "已存入相册并保存到本地" : "已存入相册");
 }
 
 async function capture() {
@@ -731,7 +746,7 @@ function showSettings(event) {
     formatRow.append("照片格式", format);
     window.TimeLightSelect?.enhance(format, "graphite");
     body.append(formatRow);
-    for (const [key, label] of [["grid", "构图网格"], ["sound", "快门声音"]]) {
+    for (const [key, label] of [["grid", "构图网格"], ["sound", "快门声音"], ["autoSaveGallery", "拍照自动存入手机相册"]]) {
       const row = document.createElement("label");
       row.className = "panel-row";
       const input = document.createElement("input");
@@ -750,7 +765,8 @@ function showSettings(event) {
 
 function visibleRolls() {
   if (state.category === "film") return filmRolls;
-  if (state.category === "favorites") return rolls.filter(roll => state.favorites.has(roll.id));
+  if (state.category === "custom") return customStore ? customStore.list() : [];
+  if (state.category === "favorites") return allAvailableRolls().filter(roll => state.favorites.has(roll.id));
   return rolls.filter(roll => roll.category === categories[state.category]);
 }
 
@@ -787,7 +803,7 @@ function styleCanister(element, roll) {
   element.style.setProperty("--roll-accent", roll?.colorSwatches?.[1] || "#777263");
   element.style.setProperty("--roll-tilt", `${(Number(roll?.id || 0) % 5 - 2) * 1.5}deg`);
   element.dataset.series = { "柯达暖金": "classic", "富士日系": "fresh", "电影夜景": "cinema",
-    "专业黑白": "mono", "玩趣复古": "retro" }[roll?.category] || "original";
+    "专业黑白": "mono", "玩趣复古": "retro", "自定义": "custom" }[roll?.category] || "original";
   element.textContent = "";
   const label = document.createElement("span");
   label.className = "canister-label";
@@ -800,6 +816,20 @@ function renderFilmRolls() {
     pressed(tab, tab.dataset.category === state.category);
   }
   ui.filmRolls.replaceChildren();
+  if (state.category === "custom") {
+    const createCard = document.createElement("div");
+    createCard.className = "film-card film-card-create";
+    const createBtn = action("自制胶卷", () => openCustomStudio(null));
+    createBtn.className = "film-choice";
+    createBtn.setAttribute("aria-label", "新建自制胶卷");
+    const plus = document.createElement("span");
+    plus.className = "film-create-plus";
+    plus.setAttribute("aria-hidden", "true");
+    plus.textContent = "+";
+    createBtn.prepend(plus);
+    createCard.append(createBtn);
+    ui.filmRolls.append(createCard);
+  }
   for (const roll of visibleRolls()) {
     const name = shortRollNames[roll.id] || roll.name;
     const card = document.createElement("div");
@@ -815,6 +845,16 @@ function renderFilmRolls() {
     styleCanister(cartridge, roll);
     button.prepend(cartridge);
     card.append(button);
+
+    if (roll.isCustom) {
+      const editBtn = action("改", event => {
+        event.stopPropagation();
+        openCustomStudio(roll);
+      });
+      editBtn.className = "film-edit-btn";
+      editBtn.setAttribute("aria-label", `编辑 ${roll.name}`);
+      card.append(editBtn);
+    }
 
     const favorite = action("", () => {
       if (state.favorites.has(roll.id)) state.favorites.delete(roll.id);
@@ -873,7 +913,12 @@ ui.filmRolls.addEventListener("wheel", event => {
   ui.filmRolls.scrollLeft += event.deltaY;
 }, { passive: false });
 document.addEventListener("keydown", event => {
-  if (event.key !== "Escape" || byId("camera-screen").hidden) return;
+  if (event.key !== "Escape") return;
+  if (!studioUi.root.hidden) {
+    closeCustomStudio();
+    return;
+  }
+  if (byId("camera-screen").hidden) return;
   if (quickTrigger) closeQuickPopover(true);
   else if (!ui.filmTray.hidden && !state.capturing) {
     setFilmTray(false);
@@ -943,6 +988,235 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("timelight:camera-ready", () => {
   if (!state.stream && !state.switching) void startDeviceCamera(state.front, false);
 });
+
+// Custom Film Roll Darkroom Studio
+const STUDIO_COLORS = [
+  "#e08b46", "#d9534f", "#5cb88a", "#4a90e2",
+  "#9b6bb3", "#d4b45e", "#4b5563", "#e67e6e"
+];
+const STUDIO_PRESETS = {
+  fresh: { name: "森屿薄荷", bandColor: "#5cb88a", exposure: 1.08, contrast: 0.96, saturate: 1.06, sepia: 0.02, hueRotate: 5, shadowTemp: -6, highlightTemp: 2, curve: 0.16, isMono: false, grain: 0, vignette: 0, halation: false, leak: false, isCCD: false },
+  warm: { name: "橘子汽水", bandColor: "#e08b46", exposure: 1.04, contrast: 1.14, saturate: 1.28, sepia: 0.20, hueRotate: -6, shadowTemp: 6, highlightTemp: 11, curve: 0.24, isMono: false, grain: 1, vignette: 1, halation: true, leak: true, isCCD: false },
+  cyber: { name: "霓虹雨夜", bandColor: "#9b6bb3", exposure: 1.02, contrast: 1.26, saturate: 1.40, sepia: 0.00, hueRotate: 14, shadowTemp: -12, highlightTemp: 10, curve: 0.30, isMono: false, grain: 1, vignette: 2, halation: true, leak: false, isCCD: true },
+  mono: { name: "夜读银盐", bandColor: "#4b5563", exposure: 1.00, contrast: 1.34, saturate: 1.00, sepia: 0.00, hueRotate: 0, shadowTemp: 0, highlightTemp: 0, curve: 0.32, isMono: true, grain: 2, vignette: 2, halation: false, leak: false, isCCD: false }
+};
+const studioUi = {
+  root: byId("custom-film-studio"),
+  close: byId("studio-close"),
+  save: byId("studio-save"),
+  delete: byId("studio-delete"),
+  preview: byId("studio-preview"),
+  canister: byId("studio-canister"),
+  name: byId("studio-name"),
+  colors: byId("studio-colors"),
+  exposure: byId("ctrl-exposure"),
+  contrast: byId("ctrl-contrast"),
+  saturate: byId("ctrl-saturate"),
+  sepia: byId("ctrl-sepia"),
+  hueRotate: byId("ctrl-hue"),
+  shadowTemp: byId("ctrl-shadow"),
+  highlightTemp: byId("ctrl-highlight"),
+  curve: byId("ctrl-curve"),
+  grain: byId("ctrl-grain"),
+  vignette: byId("ctrl-vignette"),
+  isMono: byId("ctrl-mono"),
+  halation: byId("ctrl-halation"),
+  leak: byId("ctrl-leak"),
+  isCCD: byId("ctrl-ccd")
+};
+let studioDraft = null;
+const studioSample = document.createElement("canvas");
+
+function captureStudioSample() {
+  const w = 240;
+  const h = 180;
+  studioSample.width = w;
+  studioSample.height = h;
+  const ctx = studioSample.getContext("2d");
+  if (state.stream && ui.video.videoWidth > 0 && ui.frame.clientWidth > 0) {
+    try {
+      CameraPhoto.fromView(ui.video, ui.window, ui.frame, {
+        ...frameOptions(),
+        maxDimension: 240,
+        target: studioSample
+      });
+      return;
+    } catch {
+      // Fallback to synthetic scenic sample below
+    }
+  }
+  const sky = ctx.createLinearGradient(0, 0, 0, h * 0.65);
+  sky.addColorStop(0, "#3b7cb8");
+  sky.addColorStop(1, "#f2c894");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = "#f9e39c";
+  ctx.beginPath();
+  ctx.arc(w * 0.72, h * 0.28, 22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#2d5a43";
+  ctx.fillRect(0, h * 0.62, w, h * 0.38);
+  ctx.fillStyle = "#d95d4a";
+  ctx.fillRect(w * 0.16, h * 0.42, 48, 66);
+  ctx.fillStyle = "#f4ece0";
+  ctx.fillRect(w * 0.22, h * 0.50, 14, 18);
+  ctx.fillRect(w * 0.44, h * 0.48, 34, 54);
+  ctx.fillStyle = "#52b788";
+  ctx.beginPath();
+  ctx.arc(w * 0.80, h * 0.60, 28, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function readStudioControls() {
+  if (!studioDraft) return null;
+  studioDraft.name = studioUi.name.value;
+  studioDraft.exposure = Number(studioUi.exposure.value);
+  studioDraft.contrast = Number(studioUi.contrast.value);
+  studioDraft.saturate = Number(studioUi.saturate.value);
+  studioDraft.sepia = Number(studioUi.sepia.value);
+  studioDraft.hueRotate = Number(studioUi.hueRotate.value);
+  studioDraft.shadowTemp = Number(studioUi.shadowTemp.value);
+  studioDraft.highlightTemp = Number(studioUi.highlightTemp.value);
+  studioDraft.curve = Number(studioUi.curve.value);
+  studioDraft.grain = Number(studioUi.grain.value);
+  studioDraft.vignette = Number(studioUi.vignette.value);
+  studioDraft.isMono = studioUi.isMono.checked;
+  studioDraft.halation = studioUi.halation.checked;
+  studioDraft.leak = studioUi.leak.checked;
+  studioDraft.isCCD = studioUi.isCCD.checked;
+  return customStore.buildRoll(studioDraft);
+}
+
+function syncStudioControls() {
+  if (!studioDraft) return;
+  studioUi.name.value = studioDraft.name || "";
+  studioUi.exposure.value = String(studioDraft.exposure);
+  studioUi.contrast.value = String(studioDraft.contrast);
+  studioUi.saturate.value = String(studioDraft.saturate);
+  studioUi.sepia.value = String(studioDraft.sepia);
+  studioUi.hueRotate.value = String(studioDraft.hueRotate);
+  studioUi.shadowTemp.value = String(studioDraft.shadowTemp);
+  studioUi.highlightTemp.value = String(studioDraft.highlightTemp);
+  studioUi.curve.value = String(studioDraft.curve);
+  studioUi.grain.value = String(studioDraft.grain);
+  studioUi.vignette.value = String(studioDraft.vignette);
+  studioUi.isMono.checked = Boolean(studioDraft.isMono);
+  studioUi.halation.checked = Boolean(studioDraft.halation);
+  studioUi.leak.checked = Boolean(studioDraft.leak);
+  studioUi.isCCD.checked = Boolean(studioDraft.isCCD);
+
+  byId("val-exposure").textContent = Number(studioDraft.exposure).toFixed(2);
+  byId("val-contrast").textContent = Number(studioDraft.contrast).toFixed(2);
+  byId("val-saturate").textContent = Number(studioDraft.saturate).toFixed(2);
+  byId("val-sepia").textContent = `${Math.round(Number(studioDraft.sepia) * 100)}%`;
+  byId("val-hue").textContent = `${Math.round(Number(studioDraft.hueRotate))}°`;
+  byId("val-shadow").textContent = `${Number(studioDraft.shadowTemp) > 0 ? "+" : ""}${Math.round(Number(studioDraft.shadowTemp))}`;
+  byId("val-highlight").textContent = `${Number(studioDraft.highlightTemp) > 0 ? "+" : ""}${Math.round(Number(studioDraft.highlightTemp))}`;
+  byId("val-curve").textContent = Number(studioDraft.curve).toFixed(2);
+  byId("val-grain").textContent = ["无", "细腻", "粗颗粒"][Number(studioDraft.grain)] || "细腻";
+  byId("val-vignette").textContent = ["无", "柔和", "浓郁"][Number(studioDraft.vignette)] || "柔和";
+
+  for (const dot of studioUi.colors.querySelectorAll("[data-color]")) {
+    pressed(dot, dot.dataset.color === studioDraft.bandColor);
+  }
+}
+
+function renderStudioPreview() {
+  const roll = readStudioControls();
+  if (!roll) return;
+  syncStudioControls();
+  styleCanister(studioUi.canister, roll);
+  CameraPhoto.develop(studioSample, { roll, ev: 0, light: 1, format: "JPG", isPreview: false }, studioUi.preview);
+}
+
+function initStudioColors() {
+  if (studioUi.colors.childElementCount > 0) return;
+  for (const color of STUDIO_COLORS) {
+    const dot = document.createElement("button");
+    dot.type = "button";
+    dot.className = "studio-color-dot";
+    dot.dataset.color = color;
+    dot.style.background = color;
+    dot.setAttribute("aria-label", `暗盒颜色 ${color}`);
+    dot.addEventListener("click", () => {
+      if (!studioDraft) return;
+      studioDraft.bandColor = color;
+      renderStudioPreview();
+    });
+    studioUi.colors.append(dot);
+  }
+}
+
+function openCustomStudio(existingRoll = null) {
+  if (!customStore) return;
+  initStudioColors();
+  closeQuickPopover();
+  captureStudioSample();
+  if (existingRoll?.customDraft) {
+    studioDraft = { ...existingRoll.customDraft };
+    studioUi.delete.hidden = false;
+  } else {
+    studioDraft = { ...STUDIO_PRESETS.warm, id: null, name: "" };
+    studioUi.delete.hidden = true;
+  }
+  byId("camera-screen").hidden = true;
+  studioUi.root.hidden = false;
+  syncStudioControls();
+  renderStudioPreview();
+  studioUi.name.focus({ preventScroll: true });
+}
+
+function closeCustomStudio() {
+  studioUi.root.hidden = true;
+  byId("camera-screen").hidden = false;
+  studioDraft = null;
+  updateView();
+}
+
+studioUi.close.addEventListener("click", closeCustomStudio);
+studioUi.save.addEventListener("click", () => {
+  if (!studioDraft || !customStore) return;
+  readStudioControls();
+  const saved = customStore.save(studioDraft);
+  state.category = "custom";
+  state.roll = saved;
+  savePreferences();
+  closeCustomStudio();
+  renderFilmRolls();
+  toast(`已应用自制胶卷「${saved.name}」`);
+});
+studioUi.delete.addEventListener("click", () => {
+  if (!studioDraft?.id || !customStore) return;
+  const removedId = studioDraft.id;
+  customStore.remove(removedId);
+  if (state.roll?.id === removedId) {
+    state.roll = rolls[0];
+    savePreferences();
+  }
+  closeCustomStudio();
+  renderFilmRolls();
+  toast("已删除自制胶卷");
+});
+studioUi.root.addEventListener("click", event => {
+  const presetBtn = event.target.closest("[data-preset]");
+  if (!presetBtn || !studioDraft) return;
+  const preset = STUDIO_PRESETS[presetBtn.dataset.preset];
+  if (!preset) return;
+  const keepId = studioDraft.id;
+  const keepName = studioUi.name.value.trim();
+  studioDraft = { ...preset, id: keepId || null, name: keepName || preset.name };
+  syncStudioControls();
+  renderStudioPreview();
+});
+for (const control of [
+  studioUi.name, studioUi.exposure, studioUi.contrast, studioUi.saturate,
+  studioUi.sepia, studioUi.hueRotate, studioUi.shadowTemp, studioUi.highlightTemp,
+  studioUi.curve, studioUi.grain, studioUi.vignette,
+  studioUi.isMono, studioUi.halation, studioUi.leak, studioUi.isCCD
+]) {
+  control.addEventListener("input", renderStudioPreview);
+  control.addEventListener("change", renderStudioPreview);
+}
 
 CameraGallery.init({
   suspendCamera,

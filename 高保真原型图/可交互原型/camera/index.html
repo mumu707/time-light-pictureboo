@@ -92,6 +92,7 @@
         <button class="film-tab" type="button" data-category="cinema" aria-pressed="false">电影</button>
         <button class="film-tab" type="button" data-category="mono" aria-pressed="false">黑白</button>
         <button class="film-tab" type="button" data-category="retro" aria-pressed="false">玩趣</button>
+        <button class="film-tab" type="button" data-category="custom" aria-pressed="false">自制</button>
       </div>
       <div class="film-rolls" id="film-rolls" role="group" aria-label="可用胶卷"></div>
     </section>
@@ -118,6 +119,56 @@
       <p>可以在「最近删除」中恢复。</p>
       <div id="gallery-confirm-actions"></div>
     </dialog>
+  </main>
+  <main class="custom-film-studio phone-screen" id="custom-film-studio" aria-label="自制胶卷暗房" hidden>
+    <header class="studio-header">
+      <button class="pill" id="studio-close" type="button" aria-label="返回相机">返回</button>
+      <h1>自制胶卷暗房</h1>
+      <button class="pill ink-light" id="studio-save" type="button">保存并使用</button>
+    </header>
+    <div class="studio-body">
+      <div class="studio-preview-card">
+        <canvas class="studio-preview-canvas" id="studio-preview" aria-label="胶卷效果实时预览"></canvas>
+        <div class="studio-canister-box">
+          <span class="canister studio-canister" id="studio-canister" aria-hidden="true"></span>
+        </div>
+      </div>
+
+      <div class="studio-presets" role="group" aria-label="基底预设">
+        <button class="choice studio-preset" type="button" data-preset="fresh">日系清新</button>
+        <button class="choice studio-preset" type="button" data-preset="warm">复古暖金</button>
+        <button class="choice studio-preset" type="button" data-preset="cyber">赛博霓虹</button>
+        <button class="choice studio-preset" type="button" data-preset="mono">银盐黑白</button>
+      </div>
+
+      <div class="studio-form">
+        <label class="studio-name-row">
+          <span>胶卷名称</span>
+          <input id="studio-name" type="text" maxlength="18" placeholder="例如：落日橘子汽水">
+        </label>
+        <div class="studio-colors" id="studio-colors" role="group" aria-label="暗盒配色"></div>
+
+        <label class="studio-slider"><span>曝光亮度 <em id="val-exposure">1.02</em></span><input id="ctrl-exposure" type="range" min="0.7" max="1.35" step="0.02" value="1.02"></label>
+        <label class="studio-slider"><span>反差对比 <em id="val-contrast">1.10</em></span><input id="ctrl-contrast" type="range" min="0.75" max="1.55" step="0.02" value="1.10"></label>
+        <label class="studio-slider"><span>色彩饱和 <em id="val-saturate">1.15</em></span><input id="ctrl-saturate" type="range" min="0.2" max="1.8" step="0.02" value="1.15"></label>
+        <label class="studio-slider"><span>复古暖调 <em id="val-sepia">12%</em></span><input id="ctrl-sepia" type="range" min="0" max="0.8" step="0.02" value="0.12"></label>
+        <label class="studio-slider"><span>色相偏移 <em id="val-hue">0°</em></span><input id="ctrl-hue" type="range" min="-60" max="60" step="1" value="0"></label>
+        <label class="studio-slider"><span>暗部冷暖 <em id="val-shadow">0</em></span><input id="ctrl-shadow" type="range" min="-18" max="18" step="1" value="0"></label>
+        <label class="studio-slider"><span>高光冷暖 <em id="val-highlight">0</em></span><input id="ctrl-highlight" type="range" min="-18" max="18" step="1" value="0"></label>
+        <label class="studio-slider"><span>胶片曲线 <em id="val-curve">0.22</em></span><input id="ctrl-curve" type="range" min="0" max="0.45" step="0.02" value="0.22"></label>
+        <label class="studio-slider"><span>银盐颗粒 <em id="val-grain">细腻</em></span><input id="ctrl-grain" type="range" min="0" max="2" step="1" value="1"></label>
+        <label class="studio-slider"><span>暗角强度 <em id="val-vignette">柔和</em></span><input id="ctrl-vignette" type="range" min="0" max="2" step="1" value="1"></label>
+
+        <div class="studio-toggles">
+          <label class="panel-row"><span>黑白银盐底片</span><input id="ctrl-mono" type="checkbox"></label>
+          <label class="panel-row"><span>电影高光红晕</span><input id="ctrl-halation" type="checkbox"></label>
+          <label class="panel-row"><span>胶片边缘漏光</span><input id="ctrl-leak" type="checkbox"></label>
+          <label class="panel-row"><span>CCD 液晶日期戳</span><input id="ctrl-ccd" type="checkbox"></label>
+        </div>
+
+        <button class="panel-action studio-delete" id="studio-delete" type="button" hidden>删除此自制胶卷</button>
+      </div>
+    </div>
   </main>
   <input id="photo-import" type="file" accept="image/jpeg,image/png,image/webp" hidden>
 

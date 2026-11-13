@@ -126,7 +126,7 @@ async function verifyCamera(browser, origin) {
     await quick.waitFor({ state: "hidden" });
     await button("选择胶卷").click();
     await button("胶片").click();
-    assert.equal(await picker.locator(".film-choice").count(), 32);
+    assert.equal(await picker.locator(".film-choice").count(), 40);
     assert.equal(await page.getByRole("dialog").count(), 0);
     assert.equal(await button("选择胶卷").getAttribute("aria-expanded"), "true");
     await button("收藏 Tri-X 400").click();
@@ -446,18 +446,37 @@ async function verifyEffects(browser, origin) {
     await button("原镜头").click();
     await button("关闭小窗").click();
     await button("选择胶卷").click();
-    assert.equal(await page.locator(".film-canister").count(), 32);
+    assert.equal(await page.locator(".film-canister").count(), 40);
     const palette = await page.locator(".film-canister").evaluateAll(elements => elements.map(element => element.style.getPropertyValue("--roll-band")));
-    assert.equal(new Set(palette).size, 32);
+    assert.equal(new Set(palette).size, 40);
+    await button("自制").click();
+    await button("新建自制胶卷").click();
+    await page.locator("#custom-film-studio").waitFor({ state: "visible" });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.locator("#studio-name").fill("落日气泡");
+    await page.getByLabel("电影高光红晕").check();
+    await page.getByLabel("胶片边缘漏光").check();
+    await page.getByRole("button", { name: "保存并使用" }).click();
+    await page.locator("#custom-film-studio").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#current-film").innerText(), "落日气泡");
+    await button("选择胶卷").click();
     if (process.env.CAMERA_PREVIEW_DIR) {
       await page.screenshot({ path: path.join(process.env.CAMERA_PREVIEW_DIR, "camera-film-paper.png"), animations: "disabled" });
     }
     await page.setViewportSize({ width: 320, height: 568 });
     await button("选择相纸").click();
+    for (const name of ["明信片", "牛皮纸", "蓝晒印相", "拍立得"]) {
+      await button(name).click();
+    }
     assert.equal(await page.locator("#quick-popover").isVisible(), true);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     if (process.env.CAMERA_PREVIEW_DIR) {
       await page.screenshot({ path: path.join(process.env.CAMERA_PREVIEW_DIR, "camera-paper-320.png"), animations: "disabled" });
+    }
+    await button("关闭小窗").click();
+    await button("特效镜头").click();
+    for (const name of ["万花筒", "漩涡", "热成像", "原镜头"]) {
+      await button(name).click();
     }
     await button("关闭小窗").click();
     await button("照片画幅").click();
@@ -530,6 +549,8 @@ async function verifyEffects(browser, origin) {
     await button("移除贴纸").click();
     assert.equal(await button("移动贴纸 测试贴纸").count(), 0);
     assert.equal((await page.evaluate(() => CameraAlbum.listDiscoveries("stickers"))).length, 1);
+    const autoSaved = await page.evaluate(() => window.TimeLightBridge?.lastGallerySave);
+    assert.ok(autoSaved && /^TimeLight-\d+\.(jpg|png)$/.test(autoSaved.filename) && autoSaved.size > 0);
     assert.deepEqual(errors, []);
   } finally {
     await page.close();

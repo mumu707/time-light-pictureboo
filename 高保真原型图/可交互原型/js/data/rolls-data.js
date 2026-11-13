@@ -17,7 +17,8 @@
     "富士日系",
     "电影夜景",
     "专业黑白",
-    "玩趣复古"
+    "玩趣复古",
+    "自定义"
   ];
 
   // 32 款写实胶片核心定义表
@@ -255,6 +256,62 @@
       2, 20, 2, 1, false,
       "将彩色底片反向装入暗盒的特异化学发色！全世界被染上一层金红与橘红烈焰，宛如梦幻夕阳火烧云。",
       ["#c0392b", "#d35400", "#f39c12", "#f1c40f", "#331100"]
+    ],
+    [
+      "33", "Cinestill 400D", "日光电影红晕", "#c8523b", "电影夜景",
+      "contrast(1.09) saturate(1.16) sepia(.06) brightness(1.03)",
+      1, 26, 1, 0, false,
+      "全天候日光宽容度电影负片，高光自带柔润橘红光晕，晴天肤色与霓虹招牌都宛如银幕定格。",
+      ["#c8523b", "#e9967a", "#3d5a80", "#f6edda", "#1c2541"]
+    ],
+    [
+      "34", "Phoenix 200", "实验暖橙狂想", "#e06d2b", "玩趣复古",
+      "contrast(1.34) saturate(1.38) sepia(.18) hue-rotate(-10deg)",
+      2, 22, 2, 1, false,
+      "新锐高反差实验彩色负片，浓郁琥珀红棕与强烈光晕反差，拍街头与建筑最具张力。",
+      ["#e06d2b", "#d94e34", "#f4a261", "#264653", "#1d1a16"]
+    ],
+    [
+      "35", "Lomo Purple", "幻彩暮紫负片", "#8b4ca8", "玩趣复古",
+      "hue-rotate(-48deg) saturate(1.35) contrast(1.18)",
+      1, 16, 2, 0, false,
+      "传奇红外拟色胶卷！把翡翠绿植转为梦幻丁香紫与薰衣草色调，一键坠入异想花园。",
+      ["#8b4ca8", "#b56576", "#6d597a", "#e56b6f", "#24192e"]
+    ],
+    [
+      "36", "Astia 100F", "柔和甜品日系", "#63b397", "富士日系",
+      "brightness(1.07) contrast(.92) saturate(1.08) hue-rotate(3deg)",
+      0, 14, 0, 0, false,
+      "富士停产传奇柔和反转片，蜜桃奶油高光与清甜淡雅过渡，静物与花草质感绝佳。",
+      ["#63b397", "#a8dadc", "#f4c095", "#f9f1e6", "#2a453e"]
+    ],
+    [
+      "37", "Agfa Vista 200", "德味红绿经典", "#d9383a", "柯达暖金",
+      "contrast(1.16) saturate(1.3) brightness(1.01) sepia(.05)",
+      1, 12, 1, 0, false,
+      "德系大众胶卷代表作，红色热烈通透、绿色厚实饱满，阴天也能拍出浓郁明艳的生活感。",
+      ["#d9383a", "#2a9d8f", "#e9c46a", "#f4f1de", "#262322"]
+    ],
+    [
+      "38", "Ortho Plus 80", "复古正色黑白", "#3d5265", "专业黑白",
+      "grayscale(1) contrast(1.42) brightness(.96)",
+      0, 8, 2, 0, false,
+      "只对蓝绿光敏感的正色黑白胶片，红橙色调深沉凝聚如古典湿版银盐摄影。",
+      ["#161b22", "#3d5265", "#6e7f91", "#c5cdd6", "#f5f7fa"]
+    ],
+    [
+      "39", "Vision3 50D", "清冽日光剧场", "#2f768f", "电影夜景",
+      "contrast(1.05) saturate(1.12) brightness(1.04) hue-rotate(2deg)",
+      0, 10, 0, 0, false,
+      "极低感光度超级精细电影日光卷，明媚阳光下保留海量高光层次与通透空气感。",
+      ["#2f768f", "#56a3b8", "#e8d5b7", "#f6edda", "#18303b"]
+    ],
+    [
+      "40", "Cyber Neon 800", "霓虹夜幕胶片", "#19a8b8", "玩趣复古",
+      "contrast(1.25) saturate(1.42) hue-rotate(16deg) brightness(1.03)",
+      1, 30, 2, 0, false,
+      "专为都市雨夜霓虹打造的青品红高感卷，路灯与广告牌流光溢彩。",
+      ["#19a8b8", "#e040fb", "#283593", "#ffd54f", "#0d1321"]
     ]
   ];
 
@@ -284,16 +341,144 @@
     }
   }));
 
+  const CUSTOM_ROLLS_STORAGE_KEY = "shiguang-custom-rolls-v1";
+
+  function buildCustomRoll(draft = {}) {
+    const id = String(draft.id || `custom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+    const name = String(draft.name || "我的配方").trim().slice(0, 18) || "我的配方";
+    const bandColor = draft.bandColor || "#d49b54";
+    const exposure = Number.isFinite(Number(draft.exposure)) ? Number(draft.exposure) : 1.02;
+    const contrast = Number.isFinite(Number(draft.contrast)) ? Number(draft.contrast) : 1.1;
+    const saturate = Number.isFinite(Number(draft.saturate)) ? Number(draft.saturate) : 1.15;
+    const sepia = Number.isFinite(Number(draft.sepia)) ? Number(draft.sepia) : 0.12;
+    const hueRotate = Number.isFinite(Number(draft.hueRotate)) ? Number(draft.hueRotate) : 0;
+    const shadowTemp = Number.isFinite(Number(draft.shadowTemp)) ? Number(draft.shadowTemp) : 0; // -15 cool .. +15 warm
+    const highlightTemp = Number.isFinite(Number(draft.highlightTemp)) ? Number(draft.highlightTemp) : 0;
+    const curve = Number.isFinite(Number(draft.curve)) ? Number(draft.curve) : 0.22;
+    const isMono = Boolean(draft.isMono);
+    const grain = Math.max(0, Math.min(2, Math.round(Number(draft.grain ?? 1))));
+    const vignette = Math.max(0, Math.min(2, Math.round(Number(draft.vignette ?? 1))));
+    const bloom = draft.halation ? 28 : Math.max(0, Math.min(35, Math.round(Number(draft.bloom ?? 14))));
+    const leak = draft.leak ? 1 : 0;
+    const isCCD = Boolean(draft.isCCD);
+
+    const parts = [];
+    if (isMono) parts.push("grayscale(1)");
+    if (sepia > 0.005 && !isMono) parts.push(`sepia(${sepia.toFixed(2)})`);
+    if (Math.abs(hueRotate) >= 1 && !isMono) parts.push(`hue-rotate(${Math.round(hueRotate)}deg)`);
+    parts.push(`contrast(${contrast.toFixed(2)})`);
+    if (!isMono) parts.push(`saturate(${saturate.toFixed(2)})`);
+    parts.push(`brightness(${exposure.toFixed(2)})`);
+
+    const customTone = {
+      isMono,
+      shR: Math.round(shadowTemp),
+      shG: Math.round(shadowTemp * 0.25),
+      shB: Math.round(-shadowTemp),
+      hiR: Math.round(highlightTemp),
+      hiG: Math.round(highlightTemp * 0.35),
+      hiB: Math.round(-highlightTemp),
+      toe: curve > 0.3 ? 3 : 5,
+      curve,
+      halation: Boolean(draft.halation)
+    };
+
+    return {
+      id,
+      name,
+      subname: "Custom Lab · 自制配方",
+      bandColor,
+      category: "自定义",
+      isCustom: true,
+      cssFilter: parts.join(" "),
+      grain,
+      bloom,
+      vignette,
+      leak,
+      isCCD,
+      halation: Boolean(draft.halation),
+      description: "用户暗房自制专属胶片配方。",
+      colorSwatches: [bandColor, draft.accentColor || "#5c5145", "#f6edda", "#8c7a65", "#231e19"],
+      customDraft: {
+        id,
+        name,
+        bandColor,
+        accentColor: draft.accentColor || "#5c5145",
+        exposure,
+        contrast,
+        saturate,
+        sepia,
+        hueRotate,
+        shadowTemp,
+        highlightTemp,
+        curve,
+        isMono,
+        grain,
+        vignette,
+        bloom,
+        halation: Boolean(draft.halation),
+        leak: Boolean(leak),
+        isCCD
+      },
+      customTone
+    };
+  }
+
+  const CustomRollsStore = {
+    list() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(CUSTOM_ROLLS_STORAGE_KEY));
+        if (!Array.isArray(raw)) return [];
+        return raw.map(item => buildCustomRoll(item?.customDraft || item));
+      } catch {
+        return [];
+      }
+    },
+    save(draft) {
+      const built = buildCustomRoll(draft);
+      const current = this.list();
+      const idx = current.findIndex(item => item.id === built.id);
+      if (idx >= 0) current[idx] = built;
+      else current.unshift(built);
+      try {
+        localStorage.setItem(CUSTOM_ROLLS_STORAGE_KEY, JSON.stringify(current.map(r => r.customDraft)));
+      } catch {
+        // Ignore storage errors in restricted environments
+      }
+      return built;
+    },
+    remove(id) {
+      const next = this.list().filter(item => item.id !== id);
+      try {
+        localStorage.setItem(CUSTOM_ROLLS_STORAGE_KEY, JSON.stringify(next.map(r => r.customDraft)));
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    },
+    buildRoll: buildCustomRoll
+  };
+
+  function getAllRolls() {
+    return [...ROLLS_DATA, ...CustomRollsStore.list()];
+  }
+
   // 提供标准查询接口
   function getRollById(id) {
+    const custom = CustomRollsStore.list().find(r => r.id === id);
+    if (custom) return custom;
     const padded = String(id).padStart(2, "0");
     return ROLLS_DATA.find(r => r.id === padded) || ROLLS_DATA[0];
   }
 
   function getRollsByCategory(category, favoritesSet = null) {
+    const all = getAllRolls();
+    if (category === "自定义") {
+      return CustomRollsStore.list();
+    }
     if (category === "★ 收藏") {
       if (!favoritesSet) return [ROLLS_DATA[0], ROLLS_DATA[1], ROLLS_DATA[6], ROLLS_DATA[27]];
-      return ROLLS_DATA.filter(r => favoritesSet.has(r.id));
+      return all.filter(r => favoritesSet.has(r.id));
     }
     return ROLLS_DATA.filter(r => r.category === category);
   }
@@ -301,6 +486,8 @@
   // 挂载至全局对象
   global.FILM_CATEGORIES = FILM_CATEGORIES;
   global.ROLLS_DATA = ROLLS_DATA;
+  global.CustomRollsStore = CustomRollsStore;
+  global.getAllRolls = getAllRolls;
   global.getRollById = getRollById;
   global.getRollsByCategory = getRollsByCategory;
 

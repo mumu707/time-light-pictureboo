@@ -140,6 +140,21 @@ window.CameraPhoto = (() => {
   }
 
   function rollToneProfile(roll) {
+    if (roll?.customTone) {
+      const ct = roll.customTone;
+      return {
+        isMono: Boolean(ct.isMono),
+        shR: Number(ct.shR) || 0,
+        shG: Number(ct.shG) || 0,
+        shB: Number(ct.shB) || 0,
+        hiR: Number(ct.hiR) || 0,
+        hiG: Number(ct.hiG) || 0,
+        hiB: Number(ct.hiB) || 0,
+        toe: Number.isFinite(ct.toe) ? ct.toe : 4,
+        curve: Number.isFinite(ct.curve) ? ct.curve : 0.22,
+        id: roll.id
+      };
+    }
     const id = roll.id;
     const cat = roll.category;
     const isMono = cat === "专业黑白";
@@ -148,28 +163,42 @@ window.CameraPhoto = (() => {
     let toe = 4, curve = 0.22;
 
     if (isMono) {
-      toe = id === "20" ? 2 : 5;
-      curve = id === "20" ? 0.34 : 0.22;
+      toe = id === "20" || id === "38" ? 2 : 5;
+      curve = id === "20" || id === "38" ? 0.34 : 0.22;
     } else if (cat === "柯达暖金") {
       shR = 5; shG = 1; shB = -4;
       hiR = 9; hiG = 4; hiB = -8;
       toe = id === "02" ? 8 : 4;
-      curve = id === "05" || id === "06" ? 0.28 : 0.16;
+      curve = id === "05" || id === "06" || id === "37" ? 0.28 : 0.16;
     } else if (cat === "富士日系") {
       // Classic 4th-layer mint/cyan shadows + airy highlights
       shR = -6; shG = 5; shB = 6;
       hiR = 1; hiG = 4; hiB = 3;
-      toe = id === "07" || id === "12" ? 7 : 4;
+      toe = id === "07" || id === "12" || id === "36" ? 7 : 4;
       curve = id === "11" || id === "09" ? 0.26 : 0.14;
     } else if (cat === "电影夜景") {
       shR = -9; shG = 3; shB = 11;
       hiR = 8; hiG = 3; hiB = -6;
+      if (id === "33") { shR = -4; shB = 7; hiR = 12; hiG = 4; hiB = -7; }
+      else if (id === "39") { shR = -5; shG = 2; shB = 6; hiR = 5; hiG = 4; hiB = -2; }
       toe = 5;
       curve = 0.24;
     } else if (id === "32") { // Redscale 100
       shR = 18; shG = -4; shB = -18;
       hiR = 20; hiG = 6; hiB = -24;
       toe = 3; curve = 0.28;
+    } else if (id === "34") { // Phoenix 200
+      shR = 12; shG = -2; shB = -10;
+      hiR = 16; hiG = 5; hiB = -12;
+      toe = 3; curve = 0.32;
+    } else if (id === "35") { // Lomo Purple
+      shR = 10; shG = -10; shB = 14;
+      hiR = 8; hiG = -4; hiB = 10;
+      toe = 4; curve = 0.26;
+    } else if (id === "40") { // Cyber Neon 800
+      shR = -12; shG = 6; shB = 16;
+      hiR = 14; hiG = -5; hiB = 14;
+      toe = 2; curve = 0.30;
     } else if (id === "27") { // Metropolis bleach-bypass look
       shR = -5; shG = 3; shB = 1;
       hiR = 4; hiG = 2; hiB = -5;
@@ -192,7 +221,7 @@ window.CameraPhoto = (() => {
     const vigStrength = (roll.vignette || 0) * 0.12;
     const grainAmp = isPreview ? 0 : (roll.grain || 0) * 4.8 + 1.6;
     const hasLeak = !isPreview && (roll.leak || 0) > 0 && !p.isMono;
-    const isHalation = !isPreview && (p.id === "16" || p.id === "14" || p.id === "32");
+    const isHalation = !isPreview && (Boolean(roll.halation) || p.id === "16" || p.id === "14" || p.id === "32" || p.id === "33" || p.id === "34");
     const bloomStrength = isPreview ? 0 : (roll.bloom || 0);
 
     // 1. Highlight Bloom & Movie Halation (drawn before grain/date stamp)
