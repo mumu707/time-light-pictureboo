@@ -1,55 +1,125 @@
 <!doctype html>
-<html lang="zh-Hans"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>手绘相机 · 竖屏样稿</title>
-<link rel="stylesheet" href="camera.css">
-<main class="stage" aria-label="竖屏相机">
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>拾光旁轴 · 随手拍拟物相机</title>
+  <link rel="stylesheet" href="camera.css">
+</head>
+<body>
+<main class="stage" aria-label="拾光旁轴相机">
   <div class="body-line" aria-hidden="true"></div>
+  
+  <!-- 顶部拟物机身顶板：品牌徽标与机械滚轮计数器 -->
   <header class="heading">
-    <span data-static-icon="camera" aria-hidden="true"></span>
-    <span class="counter" aria-label="累计快门"><span data-static-icon="iso" aria-hidden="true"></span><b id="count">0108</b></span>
+    <div class="brand-badge" aria-label="相机" title="相机">
+      <span data-static-icon="camera" aria-hidden="true"></span>
+    </div>
+    <div class="counter" aria-label="累计快门数" title="累计快门">
+      <span class="counter-tag">EXP</span>
+      <b id="count">0108</b>
+    </div>
   </header>
-  <nav class="quick" aria-label="拍摄快捷设置">
-    <button data-sheet="mode" id="modeButton" aria-label="拍摄模式"></button>
-    <button data-sheet="format" id="formatButton" aria-label="保存格式"></button>
-    <button data-sheet="ratio" id="ratioButton" aria-label="画幅"><span data-static-icon="aspect" aria-hidden="true"></span><span id="ratioValue">3:4</span></button>
-    <button data-action="flash" id="flashButton" aria-label="闪光"></button>
-    <button data-sheet="settings" aria-label="设置" title="设置"><span data-static-icon="sliders" aria-hidden="true"></span></button>
+
+  <!-- 顶部拟物快捷拨钮：闪光、画幅、翻转、网格、定时 -->
+  <nav class="quick" aria-label="拍摄快捷控制">
+    <button data-action="flash" id="flashButton" aria-label="闪光模式" title="闪光模式">
+      <span data-static-icon="flashOff" id="flashIcon" aria-hidden="true"></span>
+      <span id="flashLabel">关</span>
+    </button>
+    <button data-action="ratio" id="ratioButton" aria-label="切换画幅" title="切换画幅">
+      <span data-static-icon="aspect" aria-hidden="true"></span>
+      <span id="ratioValue">3:4</span>
+    </button>
+    <button data-action="grid" id="gridButton" aria-label="九宫构图" title="构图网格">
+      <span data-static-icon="grid" aria-hidden="true"></span>
+    </button>
+    <button data-action="timer" id="timerButton" aria-label="3秒定时" title="3秒定时">
+      <span data-static-icon="timer" aria-hidden="true"></span>
+      <span id="timerLabel">关</span>
+    </button>
+    <button data-action="flip" id="flipButton" aria-label="翻转镜头" title="自拍翻转">
+      <span data-static-icon="rotate" aria-hidden="true"></span>
+    </button>
   </nav>
+
+  <!-- 拟真齿孔与金属光圈边框 -->
   <div class="film-edge film-edge-top" aria-hidden="true"></div>
-  <div class="view" id="view" aria-label="取景">
+
+  <!-- 拟真取景器 -->
+  <div class="view" id="view" aria-label="取景窗">
+    <!-- 机械遮光帘片（实现物理滑入裁切动效） -->
+    <div class="shutter-blade blade-top" id="bladeTop"></div>
+    <div class="shutter-blade blade-bottom" id="bladeBottom"></div>
+    <div class="shutter-blade blade-left" id="bladeLeft"></div>
+    <div class="shutter-blade blade-right" id="bladeRight"></div>
+    <div class="diptych-divider" id="diptychDivider" hidden></div>
+
     <div class="image-area" id="imageArea">
-      <img id="preview" draggable="false" alt="取景示例">
+      <img id="preview" draggable="false" alt="取景画面">
       <div class="grid" id="grid" hidden></div>
       <div class="focus" id="focus" hidden></div>
-      <div class="subject" id="subject" aria-label="已识别台灯" hidden><span><i data-static-icon="sticker" aria-hidden="true"></i></span></div>
-      <div class="loupe" id="loupe" hidden></div>
+      <div class="date-stamp" id="dateStamp" hidden>'04 11 11</div>
     </div>
-    <div class="mode-mark" id="modeMark" hidden></div>
-    <div class="toast" id="toast" role="status" hidden></div>
+
+    <!-- 闪光灯电容爆闪遮罩 -->
     <div class="flash-frame" id="flashFrame"></div>
+    <!-- 状态指示胶带 -->
+    <div class="roll-badge" id="rollBadge"><span id="badgeRoll">01</span> · <span id="badgeName">Gold 200</span></div>
+    <div class="toast" id="toast" role="status" hidden></div>
   </div>
+
   <div class="film-edge film-edge-bottom" aria-hidden="true"></div>
-  <nav class="lens" aria-label="焦段">
-    <button data-lens="28">28</button><button data-lens="50">50</button><button data-lens="85">85</button>
-    <span>mm</span>
+
+  <!-- 经典定焦三档机械刻度拨片 -->
+  <nav class="lens" aria-label="镜头焦段">
+    <span class="lens-label">焦段</span>
+    <button data-lens="28" class="lens-tab" aria-label="28毫米广角">28</button>
+    <button data-lens="50" class="lens-tab active" aria-label="50毫米标准">50</button>
+    <button data-lens="85" class="lens-tab" aria-label="85毫米人像微距">85</button>
+    <span class="lens-unit">mm</span>
   </nav>
-  <nav class="dock" aria-label="拍摄操作">
-    <button class="tile album-launcher" data-sheet="album" aria-label="相册" title="相册"><img id="albumThumb" src="assets/half.png" alt=""></button>
-    <button class="tile" data-sheet="book" aria-label="绘本" title="绘本"><span data-static-icon="book" aria-hidden="true"></span></button>
-    <button class="shutter" data-action="capture" aria-label="拍照"><img src="assets/ink-shutter.png" alt=""></button>
-    <button class="tile stock" data-sheet="film" id="filmLauncher" aria-label="胶卷" title="胶卷" aria-controls="sheet" aria-expanded="false"><span class="mini-can" aria-hidden="true"></span><span class="pull-hint" data-static-icon="up" aria-hidden="true"></span><span id="stockLabel" aria-hidden="true">06</span></button>
-    <button class="tile" data-action="flip" aria-label="翻转镜头" title="翻转镜头"><span data-static-icon="rotate" aria-hidden="true"></span></button>
+
+  <!-- 底部纯拟物主操作台：底片暗房相册、朱红快门、拟物胶卷仓 -->
+  <nav class="dock" aria-label="主拍摄操作">
+    <!-- 左侧：底片夹相册 -->
+    <button class="dock-btn album-launcher" data-sheet="album" aria-label="打开底片夹相册" title="底片夹相册">
+      <div class="album-frame">
+        <img id="albumThumb" src="assets/photo.png" alt="最新成片">
+      </div>
+      <span class="dock-label">相簿</span>
+    </button>
+
+    <!-- 中间：经典朱红搪瓷快门按键 -->
+    <div class="shutter-wrapper">
+      <button class="shutter" data-action="capture" aria-label="拍摄快门" title="按下拍照">
+        <img src="assets/ink-shutter.png" alt="快门按钮">
+      </button>
+    </div>
+
+    <!-- 右侧：拟物胶卷暗盒仓门（上推或点击拉出胶卷抽屉） -->
+    <button class="dock-btn stock" data-sheet="film" id="filmLauncher" aria-label="胶卷仓" title="点击或上拉选择胶卷" aria-controls="sheet" aria-expanded="false">
+      <div class="can-preview">
+        <span class="mini-can" aria-hidden="true"></span>
+        <b id="stockLabel" aria-hidden="true">01</b>
+      </div>
+      <span class="dock-label"><span id="stockName">Gold 200</span> <i data-static-icon="up" aria-hidden="true"></i></span>
+    </button>
   </nav>
-  <section class="sheet" id="sheet" aria-label="抽屉" hidden>
-    <button class="paper-pull" id="paperPull" data-act="close" type="button" aria-label="收起" title="收起"><span data-static-icon="down" aria-hidden="true"></span></button>
+
+  <!-- 手绘纸质推拉抽屉 -->
+  <section class="sheet" id="sheet" aria-label="抽屉面板" hidden>
+    <button class="paper-pull" id="paperPull" data-act="close" type="button" aria-label="收起抽屉" title="收起抽屉">
+      <span data-static-icon="down" aria-hidden="true"></span>
+    </button>
     <div id="sheetContent"></div>
   </section>
+
   <div class="home-mark" aria-hidden="true"></div>
 </main>
-<script src="samples.js"></script><script src="icons.js"></script><script src="camera.js"></script></html>
 
-
-
-
-
+<script src="samples.js"></script>
+<script src="icons.js"></script>
+<script src="camera.js"></script>
+</body>
+</html>

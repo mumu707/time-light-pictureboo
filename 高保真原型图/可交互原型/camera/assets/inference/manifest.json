@@ -1,0 +1,10 @@
+{
+  "u2netp.onnx": {
+    "bytes": 4574861,
+    "sha256": "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8"
+  },
+  "ort-wasm-simd-threaded.wasm": {
+    "bytes": 14848852,
+    "sha256": "4b884c203b0fa48d057be3332c65513ff85aa3c5bddd6946acc0fab7ecda001d"
+  }
+}

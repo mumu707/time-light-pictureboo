@@ -1,0 +1,517 @@
+{
+  "units": "拾光世界单位",
+  "up": "+Y",
+  "front": "+Z",
+  "assets": {
+    "mail_kiosk": {
+      "name": "邮亭",
+      "file": "GLB/mail_kiosk.glb",
+      "collisionWidthDepth": [
+        2.24,
+        1.5
+      ],
+      "anchors": {
+        "fold_pivot": [
+          0,
+          0,
+          -0.59
+        ],
+        "mail_slot": [
+          0,
+          0.99,
+          0.61
+        ],
+        "visit": [
+          0,
+          0,
+          1.12
+        ]
+      },
+      "bounds": {
+        "min": [
+          -1.085,
+          0.0005,
+          -0.735
+        ],
+        "max": [
+          1.085,
+          1.8594,
+          0.735
+        ],
+        "dimensions": [
+          2.17,
+          1.8589,
+          1.47
+        ]
+      }
+    },
+    "windsock": {
+      "name": "纸风向袋",
+      "file": "GLB/windsock.glb",
+      "collisionWidthDepth": [
+        0.75,
+        0.68
+      ],
+      "anchors": {
+        "fold_pivot": [
+          0,
+          0,
+          -0.19
+        ],
+        "wind_pivot": [
+          0,
+          1.63,
+          0
+        ]
+      },
+      "bounds": {
+        "min": [
+          -0.355,
+          0.0005,
+          -0.32
+        ],
+        "max": [
+          0.825,
+          1.9098,
+          0.32
+        ],
+        "dimensions": [
+          1.18,
+          1.9093,
+          0.64
+        ]
+      }
+    },
+    "parcel_bench": {
+      "name": "包裹长椅",
+      "file": "GLB/parcel_bench.glb",
+      "collisionWidthDepth": [
+        2.24,
+        1.06
+      ],
+      "anchors": {
+        "fold_pivot": [
+          0,
+          0,
+          -0.39
+        ],
+        "visit": [
+          0,
+          0,
+          0.91
+        ]
+      },
+      "bounds": {
+        "min": [
+          -1.1,
+          0,
+          -0.46
+        ],
+        "max": [
+          1.1,
+          0.985,
+          0.46
+        ],
+        "dimensions": [
+          2.2,
+          0.985,
+          0.92
+        ]
+      }
+    },
+    "apricot_tree": {
+      "name": "折叶杏树",
+      "file": "GLB/apricot_tree.glb",
+      "collisionWidthDepth": [
+        1.13,
+        1.04
+      ],
+      "anchors": {
+        "fold_pivot": [
+          0,
+          0,
+          0
+        ],
+        "fruit_pick": [
+          0.66,
+          1.71,
+          0.48
+        ],
+        "visit": [
+          0,
+          0,
+          0.92
+        ]
+      },
+      "bounds": {
+        "min": [
+          -1.32,
+          0.0005,
+          -0.51
+        ],
+        "max": [
+          1.44,
+          2.907,
+          0.5655
+        ],
+        "dimensions": [
+          2.76,
+          2.9065,
+          1.0755
+        ]
+      }
+    },
+    "fruit_crate": {
+      "name": "杏果筐",
+      "file": "GLB/fruit_crate.glb",
+      "collisionWidthDepth": [
+        1.47,
+        1.05
+      ],
+      "anchors": {
+        "visit": [
+          0,
+          0,
+          0.89
+        ],
+        "fruit_pick": [
+          0,
+          0.49,
+          0.31
+        ]
+      },
+      "bounds": {
+        "min": [
+          -0.72,
+          0.0005,
+          -0.515
+        ],
+        "max": [
+          0.72,
+          0.805,
+          0.515
+        ],
+        "dimensions": [
+          1.44,
+          0.8045,
+          1.03
+        ]
+      }
+    },
+    "orchard_ladder": {
+      "name": "果园纸梯",
+      "file": "GLB/orchard_ladder.glb",
+      "collisionWidthDepth": [
+        1.1,
+        1.32
+      ],
+      "anchors": {
+        "fold_pivot": [
+          0,
+          0,
+          -0.55
+        ],
+        "visit": [
+          0,
+          0,
+          0.91
+        ]
+      },
+      "bounds": {
+        "min": [
+          -0.534,
+          -0.0185,
+          -0.6235
+        ],
+        "max": [
+          0.534,
+          1.895,
+          0.6207
+        ],
+        "dimensions": [
+          1.068,
+          1.9135,
+          1.2443
+        ]
+      }
+    },
+    "paper_telescope": {
+      "name": "纸筒望远镜",
+      "file": "GLB/paper_telescope.glb",
+      "collisionWidthDepth": [
+        1.63,
+        1.6
+      ],
+      "anchors": {
+        "fold_pivot": [
+          0,
+          0,
+          0
+        ],
+        "scope_pitch": [
+          0,
+          1.33,
+          0
+        ],
+        "visit": [
+          0,
+          0,
+          0.99
+        ]
+      },
+      "bounds": {
+        "min": [
+          -0.6481,
+          0.0015,
+          -0.8602
+        ],
+        "max": [
+          0.6481,
+          1.7542,
+          0.7364
+        ],
+        "dimensions": [
+          1.2963,
+          1.7527,
+          1.5966
+        ]
+      }
+    },
+    "star_chart": {
+      "name": "星图画架",
+      "file": "GLB/star_chart.glb",
+      "collisionWidthDepth": [
+        1.45,
+        1.12
+      ],
+      "anchors": {
+        "fold_pivot": [
+          0,
+          0,
+          -0.38
+        ],
+        "chart": [
+          0,
+          1.04,
+          0.24
+        ],
+        "visit": [
+          0,
+          0,
+          0.95
+        ]
+      },
+      "bounds": {
+        "min": [
+          -0.72,
+          -0.0192,
+          -0.5629
+        ],
+        "max": [
+          0.72,
+          1.5692,
+          0.4133
+        ],
+        "dimensions": [
+          1.44,
+          1.5883,
+          0.9762
+        ]
+      }
+    },
+    "night_lantern": {
+      "name": "夜灯",
+      "file": "GLB/night_lantern.glb",
+      "collisionWidthDepth": [
+        0.96,
+        0.92
+      ],
+      "anchors": {
+        "fold_pivot": [
+          0,
+          0,
+          0
+        ],
+        "light": [
+          0,
+          0.84,
+          0
+        ],
+        "visit": [
+          0,
+          0,
+          0.77
+        ]
+      },
+      "bounds": {
+        "min": [
+          -0.465,
+          0.0005,
+          -0.455
+        ],
+        "max": [
+          0.465,
+          1.372,
+          0.455
+        ],
+        "dimensions": [
+          0.93,
+          1.3715,
+          0.91
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "terrace": {
+      "name": "邮风露台",
+      "file": "GLB/terrace.glb",
+      "bounds": {
+        "min": [
+          -4.445,
+          -0.18,
+          -3.16
+        ],
+        "max": [
+          4.445,
+          1.9098,
+          3.16
+        ],
+        "dimensions": [
+          8.89,
+          2.0898,
+          6.32
+        ]
+      },
+      "placements": [
+        {
+          "asset": "mail_kiosk",
+          "position": [
+            -2.35,
+            0,
+            -1.72
+          ],
+          "yaw": -0.08
+        },
+        {
+          "asset": "windsock",
+          "position": [
+            2.05,
+            0,
+            -1.81
+          ],
+          "yaw": 0.37
+        },
+        {
+          "asset": "parcel_bench",
+          "position": [
+            1.35,
+            0,
+            1.12
+          ],
+          "yaw": -0.12
+        }
+      ]
+    },
+    "orchard": {
+      "name": "琥珀果园",
+      "file": "GLB/orchard.glb",
+      "bounds": {
+        "min": [
+          -4.445,
+          -0.18,
+          -3.16
+        ],
+        "max": [
+          4.445,
+          2.907,
+          3.16
+        ],
+        "dimensions": [
+          8.89,
+          3.087,
+          6.32
+        ]
+      },
+      "placements": [
+        {
+          "asset": "apricot_tree",
+          "position": [
+            -2.5,
+            0,
+            -1.37
+          ],
+          "yaw": 0.18
+        },
+        {
+          "asset": "orchard_ladder",
+          "position": [
+            2.45,
+            0,
+            -1.29
+          ],
+          "yaw": -0.29
+        },
+        {
+          "asset": "fruit_crate",
+          "position": [
+            1.58,
+            0,
+            1.18
+          ],
+          "yaw": -0.11
+        }
+      ]
+    },
+    "observatory": {
+      "name": "夜灯观星台",
+      "file": "GLB/observatory.glb",
+      "bounds": {
+        "min": [
+          -4.445,
+          -0.18,
+          -3.16
+        ],
+        "max": [
+          4.445,
+          1.7542,
+          3.16
+        ],
+        "dimensions": [
+          8.89,
+          1.9342,
+          6.32
+        ]
+      },
+      "placements": [
+        {
+          "asset": "paper_telescope",
+          "position": [
+            -2.2,
+            0,
+            -1.28
+          ],
+          "yaw": 0.4
+        },
+        {
+          "asset": "star_chart",
+          "position": [
+            2.52,
+            0,
+            -1.28
+          ],
+          "yaw": -0.24
+        },
+        {
+          "asset": "night_lantern",
+          "position": [
+            1.62,
+            0,
+            1.31
+          ],
+          "yaw": 0.09
+        }
+      ]
+    }
+  }
+}

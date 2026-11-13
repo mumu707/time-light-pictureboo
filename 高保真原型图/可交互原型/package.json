@@ -1,0 +1,30 @@
+{
+  "name": "shiguang-picturebook-showcase",
+  "version": "1.0.0",
+  "description": "拾光相机、收藏册与立体书",
+  "main": "server.js",
+  "scripts": {
+    "prepare:discovery": "node prepare-discovery.js",
+    "prepare:android": "node prepare-android.js",
+    "test:discovery": "node test-discovery-app.js",
+    "start": "node server.js",
+    "test": "npm run test:camera && npm run test:discovery",
+    "test:camera": "node test-camera-app.js"
+  },
+  "keywords": [
+    "picturebook",
+    "analog-camera",
+    "interactive-showcase",
+    "e2e-testing",
+    "playwright"
+  ],
+  "author": "Antigravity Team",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.31.1",
+    "three": "0.187.0"
+  }
+}

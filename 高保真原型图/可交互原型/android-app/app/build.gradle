@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.timelight.camera'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.timelight.camera"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    signingConfigs {
+        release {
+            def ks = file("timelight-release.jks")
+            if (ks.exists()) {
+                storeFile ks
+                storePassword System.getenv("TIMELIGHT_KS_PASS")
+                keyAlias "timelight"
+                keyPassword System.getenv("TIMELIGHT_KEY_PASS")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            applicationIdSuffix ".debug"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    androidResources {
+        noCompress 'onnx', 'wasm', 'woff2', 'webp', 'png', 'jpg', 'mjs'
+    }
+}

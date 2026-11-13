@@ -1,0 +1,42 @@
+.phone-preview {
+  --phone-width: 100%;
+  --phone-height: max(530px, 100dvh);
+  --phone-gutter: 0px;
+  width: var(--phone-width);
+  height: var(--phone-height);
+  margin: var(--phone-gutter) auto;
+  container: phone / size;
+}
+
+.phone-screen {
+  width: 100%;
+  height: 100%;
+}
+
+@media (min-width: 520px) {
+  .phone-preview {
+    --phone-width: clamp(320px, calc((100dvh - 26px) * 390 / 844), 390px);
+    --phone-height: calc(var(--phone-width) * 844 / 390);
+    --phone-gutter: max(13px, calc((100dvh - var(--phone-height)) / 2));
+  }
+
+  .phone-screen {
+    overflow: hidden;
+    border: 1px solid #58554d;
+    border-radius: 24px;
+    box-shadow: 0 18px 60px #0006;
+  }
+}
+
+html.apk-mode .phone-preview {
+  --phone-width: 100%;
+  --phone-height: 100dvh;
+  --phone-gutter: 0px;
+  margin: 0;
+}
+
+html.apk-mode .phone-screen {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}

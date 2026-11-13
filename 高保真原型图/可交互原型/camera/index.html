@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d1d1b">
+  <title>TimeLight</title>
+  <link rel="stylesheet" href="camera.css">
+  <link rel="stylesheet" href="album.css">
+  <link rel="stylesheet" href="discovery.css">
+  <link rel="stylesheet" href="phone-preview.css">
+  <script defer src="../js/native-bridge.js"></script>
+  <script defer src="../js/cloud-recognition.js"></script>
+  <script defer src="../js/ui-select.js"></script>
+  <script defer src="../js/data/icons-data.js"></script>
+  <script defer src="../js/data/rolls-data.js"></script>
+  <script defer src="../js/audio.js"></script>
+  <script defer src="album-store.js"></script>
+  <script defer src="lens-effects.js"></script>
+  <script defer src="photo-paper.js"></script>
+  <script defer src="photo-pipeline.js"></script>
+  <script defer src="camera-stickers.js"></script>
+  <script defer src="cutout.js"></script>
+  <script defer src="discovery-view.js"></script>
+  <script defer src="album-view.js"></script>
+  <script defer src="camera.js"></script>
+</head>
+<body class="phone-preview">
+  <main class="camera phone-screen" id="camera-screen" aria-label="拾光相机">
+    <header class="camera-bar" aria-label="拍摄快捷设置">
+      <button class="round ink-light" id="camera-source" type="button" aria-label="切换镜头"><span data-icon="rotate"></span></button>
+      <button class="pill" id="special-lens" type="button" aria-label="特效镜头" aria-haspopup="dialog" aria-controls="quick-popover" aria-expanded="false">镜头</button>
+      <button class="pill" id="ratio" type="button" aria-label="照片画幅" aria-haspopup="dialog" aria-controls="quick-popover" aria-expanded="false">4:3</button>
+      <button class="round" id="flash" type="button" aria-label="补光" aria-haspopup="dialog" aria-controls="quick-popover" aria-expanded="false"><span data-icon="flashOff"></span></button>
+      <button class="round" id="settings" type="button" aria-label="相机设置" aria-haspopup="dialog" aria-controls="quick-popover" aria-expanded="false"><span data-icon="sliders"></span></button>
+    </header>
+
+    <div class="finder-slot">
+      <section class="viewfinder" id="viewfinder" aria-label="取景窗">
+        <div class="finder-window" id="finder-window">
+          <video class="view-media" id="video" autoplay playsinline muted hidden aria-label="实时相机画面"></video>
+          <div class="capture-frame" id="capture-frame">
+            <canvas class="lens-preview" id="lens-preview" aria-hidden="true" hidden></canvas>
+            <div class="film-fx-overlay" id="film-fx-overlay" aria-hidden="true">
+              <span class="ccd-date-stamp" id="ccd-date-stamp" hidden></span>
+            </div>
+            <div class="grid-guide" id="grid-guide" hidden></div>
+            <div class="camera-sticker-layer" id="camera-sticker-layer"></div>
+            <div class="focus-mark" id="focus-mark" hidden></div>
+          </div>
+          <div class="camera-prompt" id="camera-prompt">
+            <p id="camera-prompt-text">正在开启相机…</p>
+            <button class="pill ink-light" id="retry-camera" type="button" hidden>开启相机</button>
+          </div>
+          <div class="developing-overlay" id="developing-overlay" role="status" aria-live="polite" hidden>
+            <span class="developing-spinner" aria-hidden="true"></span>
+            <span id="developing-text">正在冲印相纸…</span>
+          </div>
+        </div>
+        <button class="half-status" id="half-status" type="button" hidden></button>
+        <button class="countdown" id="countdown" type="button" aria-label="取消定时拍摄" hidden>
+          <span aria-live="polite"></span><small>轻触取消</small>
+        </button>
+        <div class="flash-frame" id="flash-frame" aria-hidden="true"></div>
+        <output class="toast" id="toast" role="status" hidden></output>
+      </section>
+      <section class="quick-popover" id="quick-popover" role="dialog" aria-labelledby="quick-title" hidden>
+        <header class="quick-heading">
+          <h1 id="quick-title"></h1>
+          <button id="close-quick" type="button" aria-label="关闭小窗"><span data-icon="close"></span></button>
+        </header>
+        <div class="quick-body" id="quick-body"></div>
+      </section>
+    </div>
+
+    <div class="lens-bar">
+      <button class="sticker-picker pill" id="sticker-picker" type="button" aria-label="选择拍摄贴纸" aria-haspopup="dialog" aria-controls="quick-popover" aria-expanded="false">贴纸</button>
+      <button class="paper-picker pill" id="paper-picker" type="button" aria-label="选择相纸" aria-haspopup="dialog" aria-controls="quick-popover" aria-expanded="false">相纸</button>
+      <div class="lenses" id="lenses" role="group" aria-label="取景倍率">
+        <button class="round" type="button" data-zoom="0.5" aria-pressed="false">0.5×</button>
+        <button class="round" type="button" data-zoom="1" aria-pressed="true">1×</button>
+        <button class="round" type="button" data-zoom="2" aria-pressed="false">2×</button>
+      </div>
+    </div>
+
+    <section class="film-tray" id="film-tray" aria-label="胶卷选择" hidden>
+      <div class="film-tabs" id="film-tabs" role="group" aria-label="胶卷分类">
+        <button class="film-tab" id="original-film" type="button" aria-pressed="false">原色</button>
+        <button class="film-tab" type="button" data-category="favorites" aria-label="收藏" aria-pressed="false"><span data-icon="starFilled"></span></button>
+        <button class="film-tab" type="button" data-category="film" aria-pressed="true">胶片</button>
+        <button class="film-tab" type="button" data-category="fresh" aria-pressed="false">清新</button>
+        <button class="film-tab" type="button" data-category="cinema" aria-pressed="false">电影</button>
+        <button class="film-tab" type="button" data-category="mono" aria-pressed="false">黑白</button>
+        <button class="film-tab" type="button" data-category="retro" aria-pressed="false">玩趣</button>
+      </div>
+      <div class="film-rolls" id="film-rolls" role="group" aria-label="可用胶卷"></div>
+    </section>
+
+    <footer class="dock" aria-label="拍照与回看">
+      <button class="icon-button album-button" id="album" type="button" aria-label="打开相册">
+        <span data-icon="darkroom"></span><img id="latest" alt="" hidden>
+        <span class="dock-label" aria-hidden="true">相册</span>
+      </button>
+      <button class="shutter" id="shutter" type="button" aria-label="拍照"></button>
+      <button class="film-launcher" id="film-picker" type="button" aria-label="选择胶卷" aria-controls="film-tray" aria-expanded="false">
+        <span class="canister" aria-hidden="true">胶卷</span>
+        <span class="dock-label" id="current-film">Gold 200</span>
+      </button>
+    </footer>
+  </main>
+  <main class="gallery phone-screen" id="gallery" aria-label="相册" hidden>
+    <header class="gallery-header" id="gallery-header"></header>
+    <div class="gallery-content" id="gallery-content"></div>
+    <footer class="gallery-footer" id="gallery-footer"></footer>
+    <div class="gallery-message" id="gallery-message" role="status" hidden></div>
+    <dialog class="gallery-confirm" id="gallery-confirm" aria-labelledby="gallery-confirm-title">
+      <h2 id="gallery-confirm-title"></h2>
+      <p>可以在「最近删除」中恢复。</p>
+      <div id="gallery-confirm-actions"></div>
+    </dialog>
+  </main>
+  <input id="photo-import" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+
+</body>
+</html>
