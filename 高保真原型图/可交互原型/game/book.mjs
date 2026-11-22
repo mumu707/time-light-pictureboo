@@ -5,7 +5,7 @@ import { propTypes } from "../camera/prop-types.mjs";
 import { starterProps, prizeFor, propImage, chapterThumbnail, playEcology } from "./book-ecology.mjs";
 import { activityEmotion, displayedEmotion, express, reactionEmotion } from "./spirit-emotions.mjs";
 import { primaryTrait, selectDialogueLine, buildChatFlow, pickCompanionExchange, createAmbientScheduler } from "./spirit-dialogue.mjs";
-import { PAPER_MODELS, createDefaultSceneModels, getModelPreviewAsset } from "./paper-models.mjs";
+import { PAPER_MODELS, FURNITURE_GROUPS, SCENE_LANDMARKS_VERSION, createDefaultSceneModels, ensureChapterLandmarks, getModelPreviewAsset } from "./paper-models.mjs";
 
 const el = id => document.getElementById(id);
 const shell = document.querySelector(".book-shell");
@@ -17,11 +17,23 @@ const drawer = el("desk-drawer");
 const library = el("desk-library");
 const chapterDialog = el("chapter-dialog");
 const taskDialog = el("task-dialog");
-const spiritDialog = el("spirit-dialog");
-const chatDialog = el("chat-dialog");
+const spiritHud = el("spirit-hud");
+const spiritBubble = el("spirit-speech-bubble");
+const spiritCardPanel = el("spirit-card");
+const spiritStatsPanel = el("spirit-card-stats");
+const spiritChatPanel = el("spirit-chat-panel");
+const spiritThumb = el("spirit-thumb");
+const spiritTraitBadge = el("spirit-trait-badge");
+const closeSpiritBtn = el("close-spirit-hud");
 const ambientBubble = el("ambient-bubble");
 const trashZone = el("book-trash-zone");
-const tools = ["prev-page", "next-page", "open-tasks", "chapter-label", "desk-add", "wake-spirit", "reset-view", "play-ecology"].map(el);
+const furniturePanel = el("furniture-panel");
+const furnitureItems = el("furniture-items");
+const furnitureCount = el("furniture-count");
+const toggleFurnitureBtn = el("toggle-furniture-list");
+const closeFurnitureBtn = el("close-furniture-panel");
+const tools = ["prev-page", "next-page", "open-tasks", "chapter-label", "desk-add", "wake-spirit", "reset-view", "toggle-furniture-list", "play-ecology"].map(el);
+const LONG_PRESS_MS = 350;
 const motion = matchMedia("(prefers-reduced-motion: reduce)");
 const assets = new Map();
 const actors = new Map();
@@ -31,6 +43,7 @@ const ambientScheduler = createAmbientScheduler();
 const SUMMON_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 let lastInteractedSpiritId = null;
 let companionCooldownUntil = 0;
+let focusedSpiritId = null;
 let activeChatSpiritId = null;
 let summonCountdownTimer = null;
 let lastLifeLayoutTime = 0;
@@ -54,6 +67,9 @@ function formatCountdown(ms) {
 }
 let yaw = 0, tilt = 0;
 let center = { x: 0, y: 0 }, zoom = 1;
+const camTarget = { yaw: 0, tilt: 0, x: 0, y: 0, zoom: 1 };
+let camFrame = null, idleFloatFrame = null;
+const HERO_CLOSED_VIEW = { yaw: -11, tilt: -5, zoom: 1.06 };
 const touches = new Map();
 let placementWarning = "";
 let open = false, busy = false, saveFailed = false, missing = false, revision = 0, worldRevision = 0;
@@ -66,10 +82,13 @@ const world = () => worlds[book.page];
 const records = () => book.decorations[world().id];
 const sceneModels = () => {
   book.sceneModels ||= {};
-  if (!Array.isArray(book.sceneModels[world().id])) {
-    book.sceneModels[world().id] = createDefaultSceneModels(world().id, floorRecord);
+  const id = world().id;
+  if (!Array.isArray(book.sceneModels[id])) {
+    book.sceneModels[id] = createDefaultSceneModels(id, floorRecord);
+  } else {
+    book.sceneModels[id] = ensureChapterLandmarks(id, book.sceneModels[id], floorRecord);
   }
-  return book.sceneModels[world().id];
+  return book.sceneModels[id];
 };
 const homeSpirits = () => book.spirits.filter(spirit => spirit.home === world().id);
 const tab = new URLSearchParams(location.search).get("tab") === "compendium" ? "compendium" : "stickers";
@@ -79,14 +98,26 @@ el("return-to-collection").setAttribute("aria-label", "返回收藏册");
 try {
   const loaded = loadBook(localStorage);
   book = loaded.book;
+  let dirty = loaded.migrated;
   if (book.floorVersion !== 3) {
     const remap = book.floorVersion === 2 ? expandWideFloor : expandFloor;
     for (const pieces of Object.values(book.decorations)) for (const piece of pieces) {
       if (piece.surface === "paper") Object.assign(piece, remap(piece));
     }
     book.floorVersion = 3;
-    persist();
-  } else if (loaded.migrated) persist();
+    dirty = true;
+  }
+  if ((book.sceneModelsVersion || 1) < SCENE_LANDMARKS_VERSION) {
+    book.sceneModels ||= {};
+    for (const chapter of worlds) {
+      book.sceneModels[chapter.id] = Array.isArray(book.sceneModels[chapter.id])
+        ? ensureChapterLandmarks(chapter.id, book.sceneModels[chapter.id], floorRecord)
+        : createDefaultSceneModels(chapter.id, floorRecord);
+    }
+    book.sceneModelsVersion = SCENE_LANDMARKS_VERSION;
+    dirty = true;
+  }
+  if (dirty) persist();
 } catch {
   book = loadBook({ getItem: () => null }).book;
   storageWarning = "之前的书本无法读取";
@@ -251,7 +282,7 @@ function flatBounds(record, spirit) {
   };
 }
 function isAmbientPaused() {
-  return busy || Boolean(drag) || Boolean(gesture) || Boolean(activeChatSpiritId) || Boolean(document.querySelector("dialog[open]"));
+  return busy || Boolean(drag) || Boolean(gesture) || Boolean(focusedSpiritId) || Boolean(activeChatSpiritId) || Boolean(document.querySelector("dialog[open]"));
 }
 function hideOverheadSpeech(reduced) {
   for (const entry of actors.values()) {
@@ -310,9 +341,27 @@ function triggerSpiritLine(spirit, query, propName) {
     if (showAmbient(spirit, chosen.rendered)) persist();
   }
 }
+function anchorSpiritHud(bounds) {
+  if (!focusedSpiritId || spiritHud.hidden || !bounds) return;
+  const sw = Math.max(1, stage.clientWidth);
+  const sh = Math.max(1, stage.clientHeight);
+  const cx = bounds.left + bounds.width / 2;
+  const bubbleW = Math.min(280, sw - 24);
+  const bx = clamp(cx, bubbleW / 2 + 12, Math.max(bubbleW / 2 + 12, sw - bubbleW / 2 - 12));
+  let by = bounds.top - 10;
+  if (by < 92) {
+    spiritBubble.dataset.flip = "below";
+    by = Math.min(sh - 120, bounds.top + bounds.height + 10);
+  } else {
+    delete spiritBubble.dataset.flip;
+  }
+  spiritHud.style.setProperty("--bubble-x", `${Math.round(bx)}px`);
+  spiritHud.style.setProperty("--bubble-y", `${Math.round(by)}px`);
+}
 function layout(spiritsOnly = false) {
   if (!open) return;
   const spiritBoxes = [];
+  let focusedBounds = null;
   for (const { record, button, spirit } of actors.values()) {
     if (spiritsOnly === true && !spirit) continue;
     const bounds = scene?.bounds(record, spirit) || flatBounds(record, spirit);
@@ -327,6 +376,7 @@ function layout(spiritsOnly = false) {
     image.hidden = Boolean(scene);
     if (!spirit && !scene) image.style.transform = `rotate(${(record.rotation || 0) + (record.selfRotation || 0)}deg)`;
     if (spirit) {
+      if (record.id === focusedSpiritId) focusedBounds = bounds;
       button.dataset.activity = record.activity || "idle";
       const bubble = button.querySelector(".spirit-bubble");
       const emotion = displayedEmotion(record, spiritWish(record), performance.now());
@@ -343,6 +393,7 @@ function layout(spiritsOnly = false) {
       face.textContent = faces[record.expression];
     }
   }
+  anchorSpiritHud(focusedBounds);
   for (let i = 0; i < spiritBoxes.length; i++) {
     for (let j = i + 1; j < spiritBoxes.length; j++) {
       const a = spiritBoxes[i], b = spiritBoxes[j];
@@ -360,6 +411,91 @@ function layout(spiritsOnly = false) {
     }
   }
 }
+function setFurniturePanelOpen(nextOpen) {
+  if (!furniturePanel) return;
+  furniturePanel.hidden = !nextOpen;
+  toggleFurnitureBtn?.setAttribute("aria-expanded", String(nextOpen));
+  if (nextOpen) renderFurnitureList();
+}
+function focusPropCamera(record) {
+  if (!record || busy) return;
+  if (focusedSpiritId) closeSpiritHud({ resetCamera: false });
+  const pt = record.surface === "prop" ? { x: 0, y: -1.1 } : floorPoint(record);
+  camTarget.x = clamp(pt.x, -7.2, 7.2);
+  camTarget.y = clamp(pt.y + .06, -6.2, 6.2);
+  camTarget.zoom = Math.max(zoom, 1.58);
+  camTarget.yaw = clamp(yaw || 0, -28, 28);
+  camTarget.tilt = clamp(tilt || 5.0, -6, 18);
+  if (motion.matches || !scene) {
+    stopCamFollow();
+    center = { x: camTarget.x, y: camTarget.y };
+    zoom = camTarget.zoom;
+    setView(camTarget.yaw, camTarget.tilt);
+    layout(true);
+  } else {
+    ensureCamFollow();
+  }
+  scene?.highlightProp?.(record.id);
+}
+function renderFurnitureList() {
+  if (!furnitureItems || !furnitureCount) return;
+  const list = [...sceneModels(), ...shown];
+  furnitureCount.textContent = `共 ${list.length} 件`;
+  if (furniturePanel?.hidden) return;
+  furnitureItems.replaceChildren();
+  if (!list.length) {
+    const empty = document.createElement("p");
+    empty.className = "furniture-empty";
+    empty.textContent = "这一页还没有摆放家具或贴纸。";
+    furnitureItems.append(empty);
+    return;
+  }
+  for (const item of list) {
+    const row = document.createElement("div");
+    row.className = "furniture-row";
+    row.setAttribute("role", "listitem");
+    row.dataset.selected = String(selected === item);
+    const focusBtn = document.createElement("button");
+    focusBtn.type = "button";
+    focusBtn.className = "furniture-focus-btn";
+    const thumb = document.createElement("img");
+    thumb.className = "furniture-thumb";
+    thumb.alt = "";
+    thumb.src = item.asset?.url || "";
+    const info = document.createElement("span");
+    info.className = "furniture-info";
+    const title = document.createElement("strong");
+    title.textContent = item.name || item.asset?.name || "场景道具";
+    const meta = document.createElement("small");
+    meta.textContent = item.isModel
+      ? `${PAPER_MODELS[item.modelId]?.furnGroup || "纸模"} · 3D`
+      : (item.surface === "prop" ? "布景贴纸" : "纸页贴纸");
+    info.append(title, meta);
+    focusBtn.append(thumb, info);
+    focusBtn.onclick = () => focusPropCamera(item);
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "desk-pill furniture-edit-btn";
+    editBtn.textContent = "编辑";
+    editBtn.onclick = () => {
+      focusPropCamera(item);
+      select(item);
+      el("desk-size")?.focus({ preventScroll: true });
+    };
+    row.append(focusBtn, editBtn);
+    furnitureItems.append(row);
+  }
+}
+toggleFurnitureBtn?.addEventListener("click", () => {
+  if (busy) return;
+  setFurniturePanelOpen(Boolean(furniturePanel?.hidden));
+});
+closeFurnitureBtn?.addEventListener("click", () => {
+  setFurniturePanelOpen(false);
+  toggleFurnitureBtn?.focus({ preventScroll: true });
+});
+
 function removeRecord(record) {
   if (!record) return;
   if (selected === record) select(undefined);
@@ -378,9 +514,11 @@ function removeRecord(record) {
   actors.delete(record.id);
   updateWalkMap();
   sync();
+  renderFurnitureList();
   persist();
 }
 function select(record) {
+  if (record && focusedSpiritId) closeSpiritHud({ resetCamera: false });
   if (selected) {
     const prevBtn = actors.get(selected.id)?.button;
     if (prevBtn) {
@@ -389,9 +527,14 @@ function select(record) {
     }
   }
   selected = record;
+  if (record) shell.dataset.editing = "true";
+  else delete shell.dataset.editing;
   placementMessage("");
   el("desk-selection").hidden = !record;
-  if (!record) return;
+  if (!record) {
+    renderFurnitureList();
+    return;
+  }
   const btn = actors.get(record.id)?.button;
   if (btn) {
     btn.setAttribute("aria-pressed", "true");
@@ -412,6 +555,7 @@ function select(record) {
     el("piece-face").dispatchEvent(new Event("input"));
     el("piece-surface").dispatchEvent(new Event("input"));
   }
+  renderFurnitureList();
 }
 function placementMessage(message) {
   if (placementWarning === message) return;
@@ -437,6 +581,7 @@ function pick(x, y, surface) {
 }
 let actorLongPressTimer;
 let suppressModelClick = false;
+let orbitCandidate = null;
 function clearBookTrash() {
   trashZone.hidden = true;
   delete trashZone.dataset.active;
@@ -471,57 +616,63 @@ function actor(record, spirit = false) {
     return button;
   }
   if (!record.isModel) {
-    button.style.zIndex = String(Math.min(200, records().indexOf(record) + 1));
+    button.style.zIndex = String(10 + Math.min(190, records().indexOf(record) + 1));
     const face = document.createElement("span");
     face.className = "face";
     face.setAttribute("aria-hidden", "true");
     button.append(face);
   } else {
-    button.style.zIndex = "90";
+    button.style.zIndex = "1";
   }
   button.setAttribute("aria-pressed", "false");
-  let pendingModelHold = null;
-  button.addEventListener("click", () => {
+  let pendingHold = null;
+  button.addEventListener("click", event => {
     if (suppressModelClick) { suppressModelClick = false; return; }
-    if (!busy && selected !== record) select(record);
+    if (event.detail === 0 && !busy && selected !== record) select(record);
   });
   button.addEventListener("pointerdown", event => {
     if (busy || drag || gesture || event.button !== 0) return;
     pauseAmbient();
-    if (record.isModel && selected !== record) {
-      pendingModelHold = { id: event.pointerId, startX: event.clientX, startY: event.clientY };
-      clearTimeout(actorLongPressTimer);
-      actorLongPressTimer = setTimeout(() => {
-        if (!pendingModelHold || pendingModelHold.id !== event.pointerId || busy || gesture?.moved) return;
-        pendingModelHold = null;
-        if (gesture?.id === event.pointerId) gesture = undefined;
-        suppressModelClick = true;
-        select(record);
-        const point = pick(event.clientX, event.clientY, record.surface || "paper");
-        if (!point) return;
-        drag = { id: event.pointerId, record, button, point, x: record.x, y: record.y, startX: event.clientX, startY: event.clientY, moved: false, accepted: false };
-        trashZone.hidden = false;
-        try { button.setPointerCapture(event.pointerId); } catch {}
-      }, 280);
+    if (selected === record) {
+      const point = pick(event.clientX, event.clientY, record.surface || "paper");
+      if (!point) return;
+      drag = { id: event.pointerId, record, button, point, x: record.x, y: record.y, startX: event.clientX, startY: event.clientY, moved: false, accepted: false };
+      trashZone.hidden = false;
+      try { button.setPointerCapture(event.pointerId); } catch {}
       return;
     }
-    const point = pick(event.clientX, event.clientY, record.surface || "paper");
-    if (!point) return;
-    drag = { id: event.pointerId, record, button, point, x: record.x, y: record.y, startX: event.clientX, startY: event.clientY, moved: false, accepted: false };
+    pendingHold = { id: event.pointerId, startX: event.clientX, startY: event.clientY };
+    if (!orbitCandidate) orbitCandidate = { id: event.pointerId, x: event.clientX, y: event.clientY, yaw, tilt, center, record, button };
+    button.dataset.pressing = "true";
     clearTimeout(actorLongPressTimer);
     actorLongPressTimer = setTimeout(() => {
-      if (drag?.id === event.pointerId && !busy) {
-        select(record);
-        trashZone.hidden = false;
-      }
-    }, 280);
-    button.setPointerCapture(event.pointerId);
+      delete button.dataset.pressing;
+      if (!pendingHold || pendingHold.id !== event.pointerId || busy || gesture?.moved) return;
+      pendingHold = null;
+      if (orbitCandidate?.id === event.pointerId) orbitCandidate = null;
+      if (gesture?.id === event.pointerId) gesture = undefined;
+      suppressModelClick = true;
+      navigator.vibrate?.(12);
+      select(record);
+      const point = pick(event.clientX, event.clientY, record.surface || "paper");
+      if (!point) return;
+      drag = { id: event.pointerId, record, button, point, x: record.x, y: record.y, startX: event.clientX, startY: event.clientY, moved: false, accepted: false };
+      trashZone.hidden = false;
+      try { button.setPointerCapture(event.pointerId); } catch {}
+    }, LONG_PRESS_MS);
   });
   button.addEventListener("pointermove", event => {
-    if (pendingModelHold && event.pointerId === pendingModelHold.id) {
-      if (Math.hypot(event.clientX - pendingModelHold.startX, event.clientY - pendingModelHold.startY) >= 6) {
+    if (pendingHold && event.pointerId === pendingHold.id) {
+      if (Math.hypot(event.clientX - pendingHold.startX, event.clientY - pendingHold.startY) >= 8) {
         clearTimeout(actorLongPressTimer);
-        pendingModelHold = null;
+        delete button.dataset.pressing;
+        pendingHold = null;
+        if (orbitCandidate?.id === event.pointerId && !gesture) {
+          gesture = { ...orbitCandidate, moved: true };
+          orbitCandidate = null;
+          pauseAmbient();
+          try { stage.setPointerCapture(event.pointerId); } catch {}
+        }
       }
       return;
     }
@@ -547,9 +698,12 @@ function actor(record, spirit = false) {
     else delete button.dataset.deleting;
   });
   function endActorPointer(event) {
-    if (pendingModelHold?.id === event.pointerId) {
+    if (pendingHold?.id === event.pointerId) {
       clearTimeout(actorLongPressTimer);
-      pendingModelHold = null;
+      delete button.dataset.pressing;
+      pendingHold = null;
+      if (orbitCandidate?.id === event.pointerId) orbitCandidate = null;
+      return;
     }
     if (drag?.id !== event.pointerId) return;
     clearTimeout(actorLongPressTimer);
@@ -619,18 +773,45 @@ async function restoreWorld() {
   });
   updateWalkMap();
   rebuildActors();
+  renderFurnitureList();
   statusLine();
 }
 function setAsset(record, asset) {
   Object.defineProperty(record, "asset", { value: asset, writable: true, configurable: true, enumerable: false });
 }
-function animate(duration, draw) {
+const lerp = (a, b, t) => a + (b - a) * t;
+function easeOutBack(t) {
+  if (t >= 1) return 1;
+  const c1 = 1.65, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+function stopIdleFloat() {
+  if (idleFloatFrame !== null) {
+    cancelAnimationFrame(idleFloatFrame);
+    idleFloatFrame = null;
+  }
+}
+function startIdleFloat() {
+  if (idleFloatFrame !== null || open || busy || !scene || motion.matches || document.hidden) return;
+  function step(now) {
+    idleFloatFrame = null;
+    if (open || busy || !scene || motion.matches || document.hidden) return;
+    const fy = Math.sin(now * .0014) * .045;
+    zoom = HERO_CLOSED_VIEW.zoom;
+    center = { x: 0, y: 0 };
+    setView(HERO_CLOSED_VIEW.yaw + Math.sin(now * .0009) * 1.4, HERO_CLOSED_VIEW.tilt + Math.cos(now * .0011) * .7);
+    scene.pose({ opening: 0, standing: 0, floatY: fy });
+    idleFloatFrame = requestAnimationFrame(step);
+  }
+  idleFloatFrame = requestAnimationFrame(step);
+}
+function animate(duration, draw, ease = t => t * t * (3 - 2 * t)) {
   if (motion.matches || !scene) { draw(1); return Promise.resolve(); }
   return new Promise(resolve => {
     const start = performance.now();
     function frame(time) {
       const t = clamp((time - start) / duration);
-      draw(t * t * (3 - 2 * t));
+      draw(t >= 1 ? 1 : ease(t));
       if (t >= 1 || !scene) { draw(1); resolve(); }
       else requestAnimationFrame(frame);
     }
@@ -639,14 +820,23 @@ function animate(duration, draw) {
 }
 async function openCover() {
   if (open || busy) return;
+  stopIdleFloat();
+  stopCamFollow();
   lock(true);
   cover.hidden = true;
-  await animate(540, opening => scene?.pose({ opening, standing: 0 }));
+  const startYaw = yaw, startTilt = tilt, startZoom = zoom;
+  await animate(700, p => {
+    zoom = lerp(startZoom, 1, p);
+    center = { x: 0, y: 0 };
+    setView(lerp(startYaw, 0, p), lerp(startTilt, 0, p));
+    scene?.pose({ opening: p, standing: 0 });
+  });
+  Object.assign(camTarget, { yaw: 0, tilt: 0, x: 0, y: 0, zoom: 1 });
   open = true;
   shell.dataset.open = true;
   el("page-tools").hidden = false;
   await Promise.all([
-    animate(470, standing => scene?.pose({ standing })),
+    animate(540, standing => scene?.pose({ standing }), easeOutBack),
     restoreWorld(),
     refreshCatalog()
   ]);
@@ -656,16 +846,28 @@ async function openCover() {
 async function turn(index) {
   if (!open || busy || drag || gesture || index === book.page || !worlds[index]) return;
   const direction = Math.sign(index - book.page);
+  stopCamFollow();
+  if (focusedSpiritId) closeSpiritHud({ resetCamera: false });
   lock(true);
   select(undefined);
   hideReaction();
+  const startYaw = yaw, startTilt = tilt, startZoom = zoom;
+  const startCenter = { ...center };
+  const bankYaw = clamp(startYaw - direction * 5.5, -30, 30);
+  const pullTilt = clamp(startTilt - 2.4, -8.5, 20.5);
+  const pullZoom = Math.min(startZoom, .89);
   try {
     if (scene && !motion.matches) {
       shell.dataset.turnPhase = "fold";
-      await animate(240, t => scene?.pose({ standing: 1 - t, actors: 1 }));
-      await animate(180, t => scene?.pose({ standing: 0, actors: 1 - t }));
+      await animate(250, t => {
+        zoom = lerp(startZoom, pullZoom, t);
+        center = { x: lerp(startCenter.x, 0, t), y: lerp(startCenter.y, 0, t) };
+        setView(lerp(startYaw, bankYaw, t), lerp(startTilt, pullTilt, t));
+        scene?.pose({ standing: 1 - t, actors: 1 });
+      });
+      await animate(170, t => scene?.pose({ standing: 0, actors: 1 - t }));
       shell.dataset.turnPhase = "leaf";
-      await animate(240, t => scene?.pose({ standing: 0, turning: t / 2, direction }));
+      await animate(250, t => scene?.pose({ standing: 0, turning: t / 2, direction }));
     }
     book.page = index;
     persist();
@@ -673,16 +875,25 @@ async function turn(index) {
     if (scene && !motion.matches) {
       scene.pose({ standing: 0, turning: .5, direction });
       await Promise.all([
-        animate(240, t => scene?.pose({ standing: 0, turning: .5 + t / 2, direction })),
+        animate(250, t => scene?.pose({ standing: 0, turning: .5 + t / 2, direction })),
         restoreWorld()
       ]);
       shell.dataset.turnPhase = "unfold";
-      await animate(280, standing => scene?.pose({ standing, actors: 0 }));
-      await animate(180, actors => scene?.pose({ actors }));
+      await animate(420, t => {
+        zoom = lerp(pullZoom, 1, t);
+        center = { x: 0, y: 0 };
+        setView(lerp(bankYaw, startYaw, t), lerp(pullTilt, startTilt, t));
+        scene?.pose({ standing: easeOutBack(t), actors: 0 });
+      }, t => t);
+      await animate(210, actors => scene?.pose({ actors }), easeOutBack);
     } else {
+      center = { x: 0, y: 0 };
+      zoom = 1;
+      setView(startYaw, startTilt);
       await restoreWorld();
       scene?.pose({});
     }
+    Object.assign(camTarget, { yaw: startYaw, tilt: startTilt, x: 0, y: 0, zoom: 1 });
   } finally {
     delete shell.dataset.turnPhase;
     lock(false);
@@ -760,6 +971,7 @@ function changed(record) {
     const closest = reactions.sort((a, b) => a.distance - b.distance)[0];
     showReaction(closest);
   }
+  renderFurnitureList();
   persist();
 }
 async function claimPrize(chapter) {
@@ -828,9 +1040,10 @@ function tickLife(now) {
   const dt = lastLifeTime === undefined ? 0 : (now - lastLifeTime) / 1000;
   if (dt >= 1 / 30 || lastLifeTime === undefined) {
     lastLifeTime = now;
-    if (!selected && !drag && !gesture && !activeChatSpiritId && !document.querySelector("dialog[open]")) {
-      let moved = false;
+    if (!selected && !drag && !gesture && !document.querySelector("dialog[open]")) {
+      let moved = Boolean(activeChatSpiritId);
       for (const resident of residents) {
+        if (resident.id === activeChatSpiritId) continue;
         const prevX = resident.x, prevY = resident.y, prevFacing = resident.facing;
         moveResident(resident, Math.min(.1, dt));
         if (Math.abs(resident.x - prevX) > 1e-4 || Math.abs(resident.y - prevY) > 1e-4 || resident.facing !== prevFacing) {
@@ -968,8 +1181,13 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     cancelAnimationFrame(lifeFrame);
     lifeFrame = undefined;
+    stopIdleFloat();
+    stopCamFollow();
     scene?.pauseResidents();
-  } else startLife();
+  } else {
+    startLife();
+    if (!open) startIdleFloat();
+  }
 });
 
 async function refreshCatalog() {
@@ -991,7 +1209,7 @@ function libraryMessage(message, href, label) {
   link.textContent = label;
   library.append(link);
 }
-async function openLibrary(wake, drawerTab = "stickers") {
+async function openLibrary(wake, drawerTab = "stickers", groupFilter = "全部") {
   clearSummonCountdown();
   const token = ++revision;
   el("desk-drawer-title").textContent = wake ? "唤醒精灵" : "添加贴纸";
@@ -1018,7 +1236,24 @@ async function openLibrary(wake, drawerTab = "stickers") {
       tabs.append(stickerTab, modelTab);
       library.append(tabs);
 
-      const orderedModels = Object.entries(PAPER_MODELS).sort((a, b) => (b[1].batch || 0) - (a[1].batch || 0));
+      const filters = document.createElement("div");
+      filters.className = "drawer-filters";
+      filters.setAttribute("role", "group");
+      filters.setAttribute("aria-label", "家具分类筛选");
+      for (const groupName of FURNITURE_GROUPS) {
+        const filterBtn = document.createElement("button");
+        filterBtn.type = "button";
+        filterBtn.className = "desk-pill";
+        filterBtn.textContent = groupName;
+        filterBtn.setAttribute("aria-pressed", String(groupName === groupFilter));
+        filterBtn.onclick = () => { if (current()) void openLibrary(false, "models", groupName); };
+        filters.append(filterBtn);
+      }
+      library.append(filters);
+
+      const orderedModels = Object.entries(PAPER_MODELS)
+        .filter(([, spec]) => groupFilter === "全部" || (spec.furnGroup || "布景") === groupFilter)
+        .sort((a, b) => (b[1].batch || 0) - (a[1].batch || 0));
       for (const [modelId, spec] of orderedModels) {
         const card = document.createElement("button");
         card.type = "button";
@@ -1261,26 +1496,131 @@ function placeFromLibrary(id, asset, purpose) {
   changed(record);
   button.focus({ preventScroll: true });
 }
+function stopCamFollow() {
+  if (camFrame !== null) {
+    cancelAnimationFrame(camFrame);
+    camFrame = null;
+  }
+}
+function updateFocusedCamTarget() {
+  if (!focusedSpiritId || gesture || drag) return;
+  const resident = residents.find(r => r.id === focusedSpiritId);
+  if (!resident) return;
+  const pt = floorPoint(resident);
+  camTarget.x = clamp(pt.x, -7.2, 7.2);
+  camTarget.y = clamp(pt.y + .06, -6.2, 6.2);
+}
+function ensureCamFollow() {
+  if (camFrame !== null || motion.matches) return;
+  function step() {
+    camFrame = null;
+    if (!open || busy || drag || gesture) return;
+    updateFocusedCamTarget();
+    const k = .16;
+    const dyaw = camTarget.yaw - yaw;
+    const dtilt = camTarget.tilt - tilt;
+    const dx = camTarget.x - center.x;
+    const dy = camTarget.y - center.y;
+    const dz = camTarget.zoom - zoom;
+    const moving = Math.abs(dyaw) > .08 || Math.abs(dtilt) > .08 || Math.abs(dx) > .012 || Math.abs(dy) > .012 || Math.abs(dz) > .004;
+    if (moving) {
+      center = { x: center.x + dx * k, y: center.y + dy * k };
+      zoom = zoom + dz * k;
+      setView(yaw + dyaw * k, tilt + dtilt * k);
+      layout(true);
+    } else if (focusedSpiritId) {
+      center = { x: camTarget.x, y: camTarget.y };
+      zoom = camTarget.zoom;
+      setView(camTarget.yaw, camTarget.tilt);
+      layout(true);
+    }
+    if (moving || focusedSpiritId) camFrame = requestAnimationFrame(step);
+  }
+  camFrame = requestAnimationFrame(step);
+}
+function focusSpiritCamera(spirit) {
+  const resident = residents.find(r => r.id === spirit.id);
+  if (!resident) return;
+  const pt = floorPoint(resident);
+  camTarget.x = clamp(pt.x, -7.2, 7.2);
+  camTarget.y = clamp(pt.y + .06, -6.2, 6.2);
+  camTarget.zoom = Math.max(zoom, 1.82);
+  camTarget.yaw = clamp(yaw || 0, -28, 28);
+  camTarget.tilt = clamp(tilt || 4.5, -6, 18);
+  if (motion.matches) {
+    center = { x: camTarget.x, y: camTarget.y };
+    zoom = camTarget.zoom;
+    setView(camTarget.yaw, camTarget.tilt);
+    layout(true);
+  } else {
+    ensureCamFollow();
+  }
+}
+function closeSpiritHud({ resetCamera = true, immediate = false } = {}) {
+  if (!focusedSpiritId && spiritHud.hidden && !activeChatSpiritId) return;
+  const chatId = activeChatSpiritId;
+  activeChatSpiritId = null;
+  focusedSpiritId = null;
+  if (chatId) {
+    const resident = residents.find(r => r.id === chatId);
+    if (resident) {
+      resident.chatting = false;
+      express(resident, "greeting");
+    }
+    scene?.moveResidents(residents);
+  }
+  spiritHud.hidden = true;
+  delete shell.dataset.focused;
+  spiritHud.dataset.mode = "inspect";
+  spiritBubble.hidden = true;
+  spiritStatsPanel.hidden = false;
+  spiritCardPanel.hidden = false;
+  spiritChatPanel.hidden = true;
+  if (resetCamera) {
+    Object.assign(camTarget, { yaw: 0, tilt: 0, x: 0, y: 0, zoom: 1 });
+    if (immediate || motion.matches) {
+      stopCamFollow();
+      center = { x: 0, y: 0 };
+      zoom = 1;
+      setView(0, 0);
+    } else {
+      ensureCamFollow();
+    }
+  } else {
+    stopCamFollow();
+  }
+  layout(true);
+  startLife();
+}
 function openSpirit(id) {
   const spirit = book.spirits.find(value => value.id === id);
-  if (!spirit || spiritDialog.open) return;
+  if (!spirit || busy) return;
+  if (selected) select(undefined);
+  if (activeChatSpiritId && activeChatSpiritId !== id) {
+    const prev = residents.find(r => r.id === activeChatSpiritId);
+    if (prev) prev.chatting = false;
+    activeChatSpiritId = null;
+  }
   lastInteractedSpiritId = id;
+  focusedSpiritId = id;
   pauseAmbient();
   el("spirit-name").textContent = spirit.name;
-  const card = el("spirit-card");
-  card.replaceChildren();
-  card.dataset.spirit = id;
-  const image = new Image();
-  image.alt = `${spirit.name}的贴纸剪影`;
+  spiritTraitBadge.textContent = `主性格：${primaryTrait(spirit)}`;
+  spiritThumb.hidden = true;
+  spiritThumb.removeAttribute("src");
+  spiritThumb.alt = `${spirit.name}的贴纸剪影`;
   void loadAsset(spirit.stickerId).then(asset => {
-    if (asset && spiritDialog.open && card.dataset.spirit === id) {
-      image.src = asset.url;
-      card.prepend(image);
+    if (asset && !spiritHud.hidden && spiritCardPanel.dataset.spirit === id) {
+      spiritThumb.src = asset.url;
+      spiritThumb.hidden = false;
     }
   }).catch(() => {});
-  const traitBadge = document.createElement("p");
-  traitBadge.className = "chat-meta";
-  traitBadge.textContent = `主性格：${primaryTrait(spirit)}`;
+
+  const card = spiritCardPanel;
+  card.replaceChildren();
+  card.dataset.spirit = id;
+  const stats = spiritStatsPanel;
+  stats.replaceChildren();
   const traits = document.createElement("div");
   traits.className = "spirit-traits";
   for (const [trait, value] of Object.entries(spirit.traits)) {
@@ -1295,6 +1635,9 @@ function openSpirit(id) {
   const discovered = document.createElement("p");
   discovered.textContent = spirit.discoveries.length ? spirit.discoveries.map(({ kind, value, sentiment }) =>
     `${sentiment === "like" ? "喜欢" : "回避"}${kind === "face" ? expressions[value] : value}`).join(" · ") : "在它附近摆放贴纸，观察它的喜好。";
+  stats.append(traits, discovered);
+  stats.hidden = false;
+
   const request = document.createElement("section");
   request.className = "spirit-wish";
   const wish = spiritWish({ ...spirit, fulfilled: book.fulfilled?.[spirit.id] });
@@ -1313,11 +1656,8 @@ function openSpirit(id) {
   chatBtn.className = "desk-pill desk-primary";
   chatBtn.id = "spirit-chat-btn";
   chatBtn.textContent = "💬 聊聊";
-  chatBtn.onclick = () => {
-    spiritDialog.close();
-    openChat(spirit);
-  };
-  card.append(traitBadge, request, chatBtn, traits, discovered);
+  chatBtn.onclick = () => openChat(spirit);
+  card.append(request, chatBtn);
   const move = document.createElement("label");
   const destinations = document.createElement("select");
   destinations.setAttribute("aria-label", "搬家到");
@@ -1325,25 +1665,36 @@ function openSpirit(id) {
   move.append("住处", destinations);
   window.TimeLightSelect?.enhance(destinations, "paper");
   destinations.onchange = async () => {
-    spirit.home = destinations.value;
+    const nextHome = destinations.value;
+    spirit.home = nextHome;
     select(undefined);
     persist();
     await restoreWorld();
     const movedLine = selectDialogueLine(book, spirit, { module: "基础情境环境对白", scene: "搬家与翻页", sub: "翻页加载" }, { chapterName: worlds.find(w => w.id === spirit.home)?.name || world().name });
-    if (movedLine?.rendered) showAmbient(spirit, movedLine.rendered);
+    if (movedLine?.rendered && nextHome === world().id) showAmbient(spirit, movedLine.rendered);
   };
   card.append(move);
-  spiritDialog.showModal();
+
+  spiritHud.dataset.mode = "inspect";
+  shell.dataset.focused = "true";
+  spiritCardPanel.hidden = false;
+  spiritChatPanel.hidden = true;
+  spiritBubble.hidden = true;
+  spiritHud.hidden = false;
+  focusSpiritCamera(spirit);
+  layout(true);
+  closeSpiritBtn.focus({ preventScroll: true });
 }
 
 function openChat(spirit) {
-  if (!spirit || chatDialog.open) return;
+  if (!spirit || busy) return;
   pauseAmbient();
+  focusedSpiritId = spirit.id;
   activeChatSpiritId = spirit.id;
   const resident = residents.find(r => r.id === spirit.id);
   if (resident) {
     resident.chatting = true;
-    layout(true);
+    scene?.moveResidents(residents);
   }
   const fulfilled = book.fulfilled?.[spirit.id] || [];
   const wish = spiritWish({ ...spirit, fulfilled });
@@ -1354,7 +1705,6 @@ function openChat(spirit) {
     propName: fallbackProp,
     wish
   });
-  el("chat-speaker").textContent = `与 ${spirit.name} 聊聊`;
   el("chat-meta").textContent = `主性格：${flow.trait}（偏${flow.subTrait}）· 所在：${world().name}`;
   const bubble = el("chat-bubble");
   const optionsBox = el("chat-options");
@@ -1374,9 +1724,9 @@ function openChat(spirit) {
       makeChoice("今天怎么样", () => openBranch("today")),
       makeChoice("你想要什么", () => openBranch("wish")),
       makeChoice("聊聊这一页", () => openBranch("page")),
-      makeChoice("先聊到这儿", () => chatDialog.close())
+      makeChoice("先聊到这儿", () => closeSpiritHud())
     );
-    optionsBox.querySelector("button")?.focus();
+    optionsBox.querySelector("button")?.focus({ preventScroll: true });
   }
 
   function openBranch(key) {
@@ -1386,10 +1736,10 @@ function openChat(spirit) {
     optionsBox.replaceChildren();
     if (res.isWish) {
       const viewTask = makeChoice("查看任务", () => {
-        chatDialog.close();
+        closeSpiritHud({ resetCamera: false });
         openTasks();
       }, true);
-      const later = makeChoice("待会再看", () => chatDialog.close());
+      const later = makeChoice("待会再看", () => closeSpiritHud());
       optionsBox.append(viewTask, later);
     } else {
       if (res.followUpLabel) {
@@ -1397,14 +1747,14 @@ function openChat(spirit) {
           bubble.textContent = res.secondReply;
           optionsBox.replaceChildren(
             makeChoice("回到话题", showRoot),
-            makeChoice("结束对话", () => chatDialog.close(), true)
+            makeChoice("结束对话", () => closeSpiritHud(), true)
           );
-          optionsBox.querySelector("button")?.focus();
+          optionsBox.querySelector("button")?.focus({ preventScroll: true });
         }, true));
       }
-      optionsBox.append(makeChoice("回到话题", showRoot), makeChoice("结束对话", () => chatDialog.close()));
+      optionsBox.append(makeChoice("回到话题", showRoot), makeChoice("结束对话", () => closeSpiritHud()));
     }
-    optionsBox.querySelector("button")?.focus();
+    optionsBox.querySelector("button")?.focus({ preventScroll: true });
   }
 
   optionsBox.onkeydown = event => {
@@ -1420,20 +1770,19 @@ function openChat(spirit) {
     }
   };
 
+  spiritHud.dataset.mode = "chat";
+  shell.dataset.focused = "true";
+  spiritStatsPanel.hidden = true;
+  spiritCardPanel.hidden = true;
+  spiritChatPanel.hidden = false;
+  spiritBubble.hidden = false;
+  spiritHud.hidden = false;
   showRoot();
-  chatDialog.showModal();
+  focusSpiritCamera(spirit);
+  layout(true);
 }
 
-chatDialog.addEventListener("close", () => {
-  const resident = residents.find(r => r.id === activeChatSpiritId);
-  if (resident) {
-    resident.chatting = false;
-    express(resident, "greeting");
-  }
-  activeChatSpiritId = null;
-  layout(true);
-  startLife();
-});
+closeSpiritBtn.addEventListener("click", () => closeSpiritHud());
 
 cover.addEventListener("click", () => void openCover());
 el("open-tasks").addEventListener("click", openTasks);
@@ -1451,7 +1800,7 @@ drawer.addEventListener("close", () => {
   library.replaceChildren();
   for (const url of thumbs.splice(0)) URL.revokeObjectURL(url);
 });
-for (const dialog of [chapterDialog, spiritDialog, taskDialog, chatDialog]) {
+for (const dialog of [chapterDialog, taskDialog]) {
   dialog.querySelector(".desk-close").onclick = () => dialog.close();
 }
 for (const [id, field, factor] of [["desk-size", "scale", 100], ["desk-rotation", "rotation", 1], ["desk-self-rotation", "selfRotation", 1]]) {
@@ -1522,6 +1871,7 @@ function moveCenter(origin, dx, dy, scale) {
 
 function zoomAt(nextZoom, anchor, destination) {
   zoom = nextZoom;
+  camTarget.zoom = zoom;
   setView();
   if (!anchor) return;
   const projected = pick(destination.x, destination.y, "paper");
@@ -1532,10 +1882,19 @@ function zoomAt(nextZoom, anchor, destination) {
     x: clamp(center.x + to.x - from.x, -7.2, 7.2),
     y: clamp(center.y + to.y - from.y, -6.2, 6.2)
   };
+  camTarget.x = center.x;
+  camTarget.y = center.y;
   setView();
+  if (focusedSpiritId) layout(true);
 }
 
 el("reset-view").addEventListener("click", () => {
+  if (focusedSpiritId) {
+    closeSpiritHud({ resetCamera: true, immediate: true });
+    return;
+  }
+  Object.assign(camTarget, { yaw: 0, tilt: 0, x: 0, y: 0, zoom: 1 });
+  stopCamFollow();
   center = { x: 0, y: 0 };
   zoom = 1;
   setView(0, 0);
@@ -1582,6 +1941,8 @@ stage.addEventListener("pointerdown", event => {
         sync();
       }
       const pinch = pinchMetrics();
+      orbitCandidate = null;
+      clearTimeout(actorLongPressTimer);
       if (selected) {
         gesture = {
           pinch,
@@ -1601,14 +1962,50 @@ stage.addEventListener("pointerdown", event => {
   }
   const targetBtn = event.target.closest("button");
   const idleModelBtn = targetBtn?.classList.contains("scene-model-piece") && targetBtn.dataset.editing !== "true";
-  if (drag || gesture || (targetBtn && !idleModelBtn)) return;
-  gesture = { id: event.pointerId, ...point, yaw, tilt, center, moved: false, deferCapture: Boolean(idleModelBtn) };
-  if (!idleModelBtn) stage.setPointerCapture(event.pointerId);
+  const hitModelId = (!targetBtn || idleModelBtn) && scene?.pickModel ? scene.pickModel(event.clientX, event.clientY) : null;
+  const hitActor = hitModelId ? actors.get(hitModelId) : null;
+  if (hitActor && hitActor.button !== targetBtn && !drag && !gesture) {
+    orbitCandidate = { id: event.pointerId, ...point, yaw, tilt, center, record: hitActor.record, button: hitActor.button };
+    hitActor.button.dataset.pressing = "true";
+    clearTimeout(actorLongPressTimer);
+    actorLongPressTimer = setTimeout(() => {
+      delete hitActor.button.dataset.pressing;
+      if (orbitCandidate?.id !== event.pointerId || busy || drag || gesture?.moved) return;
+      orbitCandidate = null;
+      navigator.vibrate?.(12);
+      select(hitActor.record);
+      const dragPoint = pick(point.x, point.y, hitActor.record.surface || "paper");
+      if (!dragPoint) return;
+      drag = { id: event.pointerId, record: hitActor.record, button: hitActor.button, point: dragPoint, x: hitActor.record.x, y: hitActor.record.y, startX: point.x, startY: point.y, moved: false, accepted: false };
+      trashZone.hidden = false;
+      try { hitActor.button.setPointerCapture(event.pointerId); } catch {}
+    }, LONG_PRESS_MS);
+    if (idleModelBtn) event.stopPropagation();
+    return;
+  }
+  if (idleModelBtn) {
+    orbitCandidate = { id: event.pointerId, ...point, yaw, tilt, center, button: targetBtn };
+    return;
+  }
+  if (drag || gesture || targetBtn) return;
+  gesture = { id: event.pointerId, ...point, yaw, tilt, center, moved: false };
+  stage.setPointerCapture(event.pointerId);
 }, true);
 
 stage.addEventListener("pointermove", event => {
   if (busy) return;
   if (touches.has(event.pointerId)) touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (orbitCandidate?.id === event.pointerId && !gesture && !drag) {
+    const odx = event.clientX - orbitCandidate.x, ody = event.clientY - orbitCandidate.y;
+    if (Math.hypot(odx, ody) >= 8) {
+      clearTimeout(actorLongPressTimer);
+      if (orbitCandidate.button) delete orbitCandidate.button.dataset.pressing;
+      gesture = { id: orbitCandidate.id, x: orbitCandidate.x, y: orbitCandidate.y, yaw: orbitCandidate.yaw, tilt: orbitCandidate.tilt, center: orbitCandidate.center, moved: true };
+      orbitCandidate = null;
+      pauseAmbient();
+      try { stage.setPointerCapture(event.pointerId); } catch {}
+    }
+  }
   if (gesture?.pinch && touches.size === 2) {
     const next = pinchMetrics();
     if (gesture.piece) {
@@ -1628,23 +2025,30 @@ stage.addEventListener("pointermove", event => {
   const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
   if (Math.hypot(dx, dy) > 5) {
     gesture.moved = true;
-    if (gesture.deferCapture) {
-      gesture.deferCapture = false;
-      clearTimeout(actorLongPressTimer);
-      try { stage.setPointerCapture(event.pointerId); } catch {}
-    }
     pauseAmbient();
   }
   if (!gesture.moved) return;
   stage.dataset.orbiting = "true";
-  if (scene) setView(gesture.yaw - dx * .23, gesture.tilt + dy * .20);
-  else {
+  if (scene) {
+    setView(gesture.yaw - dx * .23, gesture.tilt + dy * .20);
+    camTarget.yaw = yaw;
+    camTarget.tilt = tilt;
+    if (focusedSpiritId) layout(true);
+  } else {
     moveCenter(gesture.center, dx, dy, zoom);
+    camTarget.x = center.x;
+    camTarget.y = center.y;
     setView();
   }
 });
 function endGesture(event) {
   touches.delete(event.pointerId);
+  if (orbitCandidate?.id === event.pointerId) {
+    clearTimeout(actorLongPressTimer);
+    if (orbitCandidate.button) delete orbitCandidate.button.dataset.pressing;
+    orbitCandidate = null;
+    return;
+  }
   if (gesture?.pinch) {
     if (!touches.size) {
       if (gesture.piece) changed(gesture.piece);
@@ -1656,7 +2060,10 @@ function endGesture(event) {
   const tapped = event.type === "pointerup" && !gesture.moved;
   gesture = undefined;
   delete stage.dataset.orbiting;
-  if (tapped) select(undefined);
+  if (tapped) {
+    if (selected) select(undefined);
+    else if (focusedSpiritId) closeSpiritHud();
+  }
 }
 stage.addEventListener("pointerup", endGesture);
 stage.addEventListener("pointercancel", endGesture);
@@ -1669,6 +2076,8 @@ stage.addEventListener("click", event => {
 new ResizeObserver(layout).observe(stage);
 
 function fallback() {
+  stopIdleFloat();
+  stopCamFollow();
   scene = undefined;
   stage.dataset.mode = "flat";
   el("reset-view").hidden = false;
@@ -1676,18 +2085,28 @@ function fallback() {
 }
 statusLine();
 showWorld();
-fallback();
+stage.dataset.mode = "loading";
 try {
   const { createScene } = await import("./book-scene.mjs");
-  await document.fonts.load("24px Xiaolai", "拾光立体书暖窗书房雨后花园月光车站").catch(() => {});
+  void document.fonts.load("24px Xiaolai", "Can-mie-rua拾光立体书暖窗书房雨后花园月光车站").catch(() => {});
   scene = createScene(stage, layout, fallback);
   if (scene) {
     stage.dataset.mode = "3d";
     el("reset-view").hidden = false;
     scene.setWorld(world().id);
-    setView(0, 0);
-    scene.pose({ opening: open ? 1 : 0, standing: open ? 1 : 0 });
-    if (open) sync();
+    if (open) {
+      zoom = 1;
+      setView(0, 0);
+      scene.pose({ opening: 1, standing: 1 });
+      sync();
+    } else {
+      zoom = motion.matches ? 1 : HERO_CLOSED_VIEW.zoom;
+      setView(motion.matches ? 0 : HERO_CLOSED_VIEW.yaw, motion.matches ? 0 : HERO_CLOSED_VIEW.tilt);
+      scene.pose({ opening: 0, standing: 0 });
+      startIdleFloat();
+    }
+  } else {
+    fallback();
   }
 } catch {
   fallback();

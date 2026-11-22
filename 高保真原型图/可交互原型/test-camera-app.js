@@ -7,10 +7,7 @@ const path = require("node:path");
 const { startServer } = require("./server");
 
 function loadPlaywright() {
-  for (const name of [
-    "playwright", "playwright-core",
-    "C:/Users/amumulin/Tools/node/node-v23.9.0-win-x64/node_modules/@playwright/cli/node_modules/playwright"
-  ]) {
+  for (const name of ["playwright", "playwright-core"]) {
     try {
       return require(name);
     } catch (error) {
@@ -18,6 +15,28 @@ function loadPlaywright() {
     }
   }
   throw new Error("请先安装项目的 Playwright 开发依赖");
+}
+
+function resolveBrowserPath(chromium) {
+  const envPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || process.env.CHROME_PATH;
+  if (envPath && fs.existsSync(envPath)) return envPath;
+  const bundled = chromium.executablePath();
+  if (bundled && fs.existsSync(bundled)) return undefined;
+  const candidates = process.platform === "win32"
+    ? [
+        path.join(process.env["PROGRAMFILES"] || "C:/Program Files", "Google/Chrome/Application/chrome.exe"),
+        path.join(process.env["PROGRAMFILES(X86)"] || "C:/Program Files (x86)", "Google/Chrome/Application/chrome.exe"),
+        path.join(process.env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe"),
+        path.join(process.env["PROGRAMFILES(X86)"] || "C:/Program Files (x86)", "Microsoft/Edge/Application/msedge.exe"),
+        path.join(process.env["PROGRAMFILES"] || "C:/Program Files", "Microsoft/Edge/Application/msedge.exe")
+      ]
+    : process.platform === "darwin"
+      ? [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+        ]
+      : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
+  return candidates.find(candidate => candidate && fs.existsSync(candidate));
 }
 
 async function verifyUpgrade(browser, origin) {
@@ -149,6 +168,19 @@ async function verifyCamera(browser, origin) {
     });
     assert.equal(await page.locator("#current-film").innerText(), "Tri-X 400");
     await page.setViewportSize({ width: 390, height: 844 });
+    const zoom05 = page.locator('[data-zoom="0.5"]');
+    const zoom1 = page.locator('[data-zoom="1"]');
+    const zoom2 = page.locator('[data-zoom="2"]');
+    assert.equal(await zoom05.isDisabled(), false, "0.5x button should stay enabled on live camera");
+    const scaleAt1 = await page.locator("#viewfinder").evaluate(el => Number(el.style.getPropertyValue("--scale")));
+    await zoom05.click();
+    assert.equal(await zoom05.getAttribute("aria-pressed"), "true");
+    const scaleAt05 = await page.locator("#viewfinder").evaluate(el => Number(el.style.getPropertyValue("--scale")));
+    assert.ok(scaleAt05 < scaleAt1 && scaleAt05 >= 1, `expected 0.5x scale (${scaleAt05}) < 1x scale (${scaleAt1})`);
+    await zoom2.click();
+    const scaleAt2 = await page.locator("#viewfinder").evaluate(el => Number(el.style.getPropertyValue("--scale")));
+    assert.ok(scaleAt2 > scaleAt1, `expected 2x scale (${scaleAt2}) > 1x scale (${scaleAt1})`);
+    await zoom1.click();
     await button("选择胶卷").click();
     await button("Gold 200").click();
     assert.equal(await picker.isVisible(), true);
@@ -452,10 +484,23 @@ async function verifyEffects(browser, origin) {
     await button("自制").click();
     await button("新建自制胶卷").click();
     await page.locator("#custom-film-studio").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#viewfinder").isVisible(), true);
+    assert.equal(await page.locator(".camera-bar").isVisible(), true);
+    assert.equal(await page.locator(".lens-bar").isVisible(), true);
+    const vfBox = await page.locator("#viewfinder").boundingBox();
+    const studioBox = await page.locator("#custom-film-studio").boundingBox();
+    assert.ok(vfBox.height >= 160 && vfBox.y + vfBox.height <= studioBox.y + 4, "custom studio must not cover viewfinder");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.locator("#ctrl-exposure").fill("1.24");
+    await page.locator("#ctrl-exposure").dispatchEvent("input");
+    const liveFilter = await page.locator("#video").evaluate(node => node.style.filter);
+    assert.ok(liveFilter.includes("brightness(1.24)"), `expected live filter brightness(1.24), got ${liveFilter}`);
     await page.locator("#studio-name").fill("落日气泡");
     await page.getByLabel("电影高光红晕").check();
     await page.getByLabel("胶片边缘漏光").check();
+    if (process.env.CAMERA_PREVIEW_DIR) {
+      await page.screenshot({ path: path.join(process.env.CAMERA_PREVIEW_DIR, "camera-studio-live.png"), animations: "disabled" });
+    }
     await page.getByRole("button", { name: "保存并使用" }).click();
     await page.locator("#custom-film-studio").waitFor({ state: "hidden" });
     assert.equal(await page.locator("#current-film").innerText(), "落日气泡");
@@ -562,9 +607,8 @@ async function main() {
   let browser;
   try {
     const { chromium } = loadPlaywright();
-    const installedChrome = "C:/Program Files/Google/Chrome/Application/chrome.exe";
     browser = await chromium.launch({
-      executablePath: fs.existsSync(installedChrome) ? installedChrome : undefined,
+      executablePath: resolveBrowserPath(chromium),
       args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
     });
     await verifyUpgrade(browser, origin);

@@ -1,6 +1,13 @@
-# 拾光绘本：万物有灵
+# Can-mie-rua
 
-拾光是一款手绘胶片相机。玩家可以从成片提取贴纸，在收藏册浏览图鉴，并用贴纸装饰立体书的不同生态。
+**Can-mie-rua** 是一款融合拟物胶片相机、离线智能抠图贴纸、万物图鉴与可交互 3D 立体书的创意摄影应用（支持 Web 端与 Android APK）。
+
+## 核心特性
+
+- **拟物胶片相机 & 实时自制暗房**：内置多款经典胶卷与 CCD 预设、实时自制滤镜暗房（曝光 / 对比度 / 高光阴影色温 / 胶片颗粒 / 漏光 / 光晕）、特效镜头（鱼眼 / 柔焦等）、画幅裁切、半格连拍，以及支持 `0.5×` / `1×` / `2×` 变焦取景与丰富手工相纸边框。
+- **离线 U²-NetP 抠图 & remove.bg 式精修**：基于浏览器 Web Worker 本地运行 `U²-NetP` 与测地线色彩扩散精修，支持绿色「保留 +」/ 红色「擦除 -」交互式微调选区、实时轮廓预览，并自动生成带纸质白边的模切贴纸与原片合辑。
+- **DeepSeek AI 万物图鉴**：通过 DeepSeek 多模态识别为主体贴纸生成脑洞外号、分类、趣味标签与精灵观察笔记；支持自定义 API Key（客户端 / 本地服务双重保护，不在前端硬编码秘钥）。
+- **可交互 3D 立体书桌面**：基于 Three.js 打造的实景木桌立体书微缩世界（暖光丁达尔光束、ACES 色调映射与边缘辉光渲染），实装 **100 款**跨章节通用 3D 家具（桌椅 / 柜架 / 灯火 / 茶食 / 绿植休闲 5 大分类，支持灯火实时联动场景点光源）、无折痕单片卡纸精灵立牌、350ms 长按进编辑防误触、以及“家具清单”一键缩放聚焦定位。
 
 ## 本地运行
 
@@ -12,17 +19,18 @@ npm ci
 npm start
 ```
 
-打开 `http://localhost:3468/` 进入相机，从相册进入收藏册和立体书。实时取景需要浏览器相机权限。拍照与本地贴纸提取无需云端 API Key；可选的图像识别见[贴纸与图鉴配置](高保真原型图/可交互原型/camera/贴纸与图鉴配置.md)。
+打开 `http://localhost:3468/` 进入相机，从相册可进入贴纸收藏册、万物图鉴与 3D 立体书。实时取景需要浏览器相机权限；拍照与本地 U²-NetP 抠图无需云端 API Key，可选的 DeepSeek 图像识别配置见[贴纸与图鉴配置](高保真原型图/可交互原型/camera/贴纸与图鉴配置.md)。
 
-首次运行浏览器回归测试：
+首次运行浏览器端到端回归测试：
 
 ```sh
 npx playwright install chromium
 npm test
 ```
 
-## Android
+## Android 安装包与构建
 
-在可交互原型目录运行 `npm run prepare:android`，再用 Android Studio 打开 `android-app`，使用 JDK 17 和 Android SDK 34 构建 Debug。若要签署 Release，可在本地提供 `android-app/app/timelight-release.jks`，并设置 `TIMELIGHT_KS_PASS` 和 `TIMELIGHT_KEY_PASS`。签名文件和 APK 不纳入仓库。
+- **直接安装体验**：根目录提供已签名的最新调试安装包 [Can-mie-rua-v1.0.0-debug.apk](Can-mie-rua-v1.0.0-debug.apk)。
+- **本地重新构建**：在 `高保真原型图/可交互原型` 目录运行 `npm run prepare:android` 同步 Web 资源，再使用 Android Studio 或 Gradle（JDK 17 + Android SDK 34）打开 `android-app` 构建 Debug APK。
 
 场景原画、可独立装载的纸模和交接文档见[设计审查](高保真原型图/可交互原型/设计审查)。

@@ -156,7 +156,7 @@ function startServer(port = DEFAULT_PORT, baseDir = BASE_DIR) {
       const address = server.address();
       const actualPort = typeof address === 'object' ? address.port : port;
       const origin = `http://127.0.0.1:${actualPort}`;
-      console.log(`[SERVER] 拾光相机本地服务器就绪: ${origin}`);
+      console.log(`[SERVER] Can-mie-rua 本地服务器就绪: ${origin}`);
       resolve({ server, port: actualPort, origin });
     });
   });

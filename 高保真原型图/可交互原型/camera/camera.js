@@ -94,6 +94,7 @@ let toastTimeout;
 let focusTimeout;
 let latestUrl;
 let cameraRequest = 0;
+let pendingCameraReady = false;
 let captureTimer;
 let latestRefresh = 0;
 let lensAnimation = 0;
@@ -141,17 +142,33 @@ function supportsTorch() {
   return currentTrack()?.getCapabilities?.().torch === true;
 }
 
+function hasHardwareUltraWide() {
+  const minZoom = currentTrack()?.getCapabilities?.().zoom?.min;
+  return typeof minZoom === "number" && minZoom <= .55;
+}
+
+function targetScaleForZoom(zoom) {
+  if (state.stream && hasHardwareUltraWide()) return zoom;
+  // Reserve 1.32x sensor headroom at 1x so 0.5x reveals the widest uncropped frame on standard lenses.
+  return { .5: 1, 1: 1.32, 2: 2.64 }[zoom] || zoom;
+}
+
 function mediaScale() {
-  if (state.stream) return Math.max(1, state.zoom / (currentTrack()?.getSettings().zoom || 1));
-  return { .5: 1, 1: 1.12, 2: 2.24 }[state.zoom];
+  const targetScale = targetScaleForZoom(state.zoom);
+  if (state.stream) return Math.max(1, targetScale / (currentTrack()?.getSettings().zoom || 1));
+  return targetScale;
 }
 
 function fillLight() {
   return state.flash && !supportsTorch() ? 1.16 : 1;
 }
 
+function activeRoll() {
+  return studioCompareOriginal ? null : (studioPreviewRoll || state.roll);
+}
+
 function photoFilter() {
-  return CameraPhoto.filter(state.roll, 0, fillLight());
+  return CameraPhoto.filter(activeRoll(), 0, fillLight());
 }
 
 function frameOptions() {
@@ -182,7 +199,8 @@ function nextLensFrame(now = performance.now()) {
   lensAnimation = 0;
   if (!state.stream || !needsPreview() || document.hidden || byId("camera-screen").hidden) return;
   if (ui.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-    const signature = `${state.lens}:${state.roll?.id || ""}:${state.zoom}:${state.ratio}:${state.front}`;
+    const roll = activeRoll();
+    const signature = `${state.lens}:${roll?.id || ""}:${roll?.cssFilter || ""}:${state.zoom}:${state.ratio}:${state.front}`;
     if (signature !== lastLensSignature || (now - lastLensRenderTime >= 36 && ui.video.currentTime !== lastVideoTime)) {
       drawLensPreview();
       lastVideoTime = ui.video.currentTime;
@@ -209,8 +227,9 @@ function updateLensPreview() {
   }
   if (ui.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
     drawLensPreview();
+    const roll = activeRoll();
     lastVideoTime = ui.video.currentTime;
-    lastLensSignature = `${state.lens}:${state.roll?.id || ""}:${state.zoom}:${state.ratio}:${state.front}`;
+    lastLensSignature = `${state.lens}:${roll?.id || ""}:${roll?.cssFilter || ""}:${state.zoom}:${state.ratio}:${state.front}`;
   } else {
     ui.lensPreview.hidden = true;
   }
@@ -218,10 +237,11 @@ function updateLensPreview() {
 }
 
 function updateView() {
-  const filmName = state.roll?.name || "原色";
-  byId("current-film").textContent = shortRollNames[state.roll?.id] || filmName;
+  const roll = activeRoll();
+  const filmName = roll?.name || "原色";
+  byId("current-film").textContent = shortRollNames[roll?.id] || filmName;
   ui.filmPicker.setAttribute("aria-description", `当前胶卷 ${filmName}`);
-  styleCanister(ui.filmPicker.querySelector(".canister"), state.roll);
+  styleCanister(ui.filmPicker.querySelector(".canister"), roll);
   ui.paperPicker.textContent = state.paper === "none" ? "相纸" : CameraPaper.choices[state.paper];
   ui.paperPicker.classList.toggle("active", state.paper !== "none");
   ui.paperPicker.setAttribute("aria-description", `当前相纸 ${CameraPaper.choices[state.paper]}`);
@@ -248,9 +268,7 @@ function updateView() {
   setIcon(ui.flash.firstElementChild, state.flash ? "flashOn" : "flashOff");
   document.querySelectorAll("[data-zoom]").forEach(button => {
     pressed(button, Number(button.dataset.zoom) === state.zoom);
-    const zoomRange = currentTrack()?.getCapabilities?.().zoom;
-    button.disabled = state.switching || state.controlling ||
-      (Boolean(state.stream) && button.dataset.zoom === "0.5" && !(zoomRange?.min <= .5));
+    button.disabled = state.switching || state.controlling;
   });
   ui.filmPicker.disabled = state.capturing;
   ui.filmTray.inert = state.capturing;
@@ -258,11 +276,20 @@ function updateView() {
   ui.specialLens.textContent = state.lens === "normal" ? "镜头" : CameraLens.choices[state.lens];
   ui.specialLens.setAttribute("aria-description", `当前镜头 ${CameraLens.choices[state.lens]}`);
   ui.specialLens.classList.toggle("active", state.lens !== "normal");
-  ui.filmOverlay.dataset.vignette = String(state.roll?.vignette || 0);
-  ui.filmOverlay.dataset.leak = String((state.roll?.leak && state.roll?.category !== "专业黑白") ? 1 : 0);
-  ui.filmOverlay.dataset.halation = String((state.roll?.halation || state.roll?.id === "16" || state.roll?.id === "14" || state.roll?.id === "32" || state.roll?.id === "33" || state.roll?.id === "34") ? 1 : 0);
-  ui.ccdDateStamp.hidden = !state.roll?.isCCD;
-  if (state.roll?.isCCD) ui.ccdDateStamp.textContent = formatCcdDate();
+  ui.filmOverlay.dataset.vignette = String(roll?.vignette || 0);
+  ui.filmOverlay.dataset.leak = String((roll?.leak && roll?.category !== "专业黑白") ? 1 : 0);
+  ui.filmOverlay.dataset.halation = String((roll?.halation || roll?.id === "16" || roll?.id === "14" || roll?.id === "32" || roll?.id === "33" || roll?.id === "34") ? 1 : 0);
+  const sh = Number(roll?.customTone?.shR || 0);
+  const hi = Number(roll?.customTone?.hiR || 0);
+  if ((sh || hi) && !roll?.customTone?.isMono) {
+    const hiTint = hi >= 0 ? `rgb(255 190 120 / ${(hi * 0.008).toFixed(3)})` : `rgb(125 185 255 / ${(-hi * 0.008).toFixed(3)})`;
+    const shTint = sh >= 0 ? `rgb(245 160 95 / ${(sh * 0.008).toFixed(3)})` : `rgb(90 145 235 / ${(-sh * 0.008).toFixed(3)})`;
+    ui.filmOverlay.style.backgroundImage = `linear-gradient(180deg, ${hiTint}, ${shTint})`;
+  } else {
+    ui.filmOverlay.style.backgroundImage = "";
+  }
+  ui.ccdDateStamp.hidden = !roll?.isCCD;
+  if (roll?.isCCD) ui.ccdDateStamp.textContent = formatCcdDate();
   ui.halfStatus.hidden = state.ratio !== "半格";
   ui.halfStatus.disabled = !state.halfFrame || state.capturing;
   ui.halfStatus.textContent = state.halfFrame ? "1 / 2 · 重拍第一格" : "0 / 2 · 半格";
@@ -283,6 +310,7 @@ function suspendCamera() {
   cameraRequest++;
   captureTimer?.abort();
   closeQuickPopover();
+  if (studioDraft) closeCustomStudio();
   stopStream();
 }
 
@@ -378,6 +406,10 @@ async function startDeviceCamera(targetFront = state.front, strictFacing = false
   } finally {
     state.switching = false;
     updateView();
+    if (pendingCameraReady && !state.stream && !state.capturing && !byId("camera-screen").hidden) {
+      pendingCameraReady = false;
+      void startDeviceCamera(state.front, false);
+    }
   }
 }
 
@@ -432,22 +464,13 @@ async function setFlash(enabled) {
 async function selectZoom(zoom) {
   if (state.capturing || state.switching || state.controlling) return;
   const range = currentTrack()?.getCapabilities?.().zoom;
+  const targetScale = targetScaleForZoom(zoom);
   if (range) {
     try {
-      const requested = Math.min(range.max, Math.max(range.min, zoom));
-      const settings = await controlTrack({ zoom: requested });
-      if (!settings) return;
-      if (zoom < 1 && Math.abs((settings.zoom || 1) - zoom) > .05) {
-        state.zoom = settings.zoom || 1;
-        updateView();
-        toast("此镜头不支持该倍率");
-        return;
-      }
+      const requested = Math.min(range.max, Math.max(range.min, targetScale));
+      await controlTrack({ zoom: requested });
     } catch {
-      if (zoom < 1) {
-        toast("此镜头不支持该倍率");
-        return;
-      }
+      // Fallback to digital FOV scaling via mediaScale() when hardware zoom constraint is rejected.
     }
   }
   state.zoom = zoom;
@@ -525,17 +548,18 @@ async function persistPhoto(source, recipe, ratio, origin) {
     CameraGallery.openUnsaved(photo);
     return;
   }
-  let savedToSystem = false;
+  void refreshLatest().catch(() => {});
   if (state.autoSaveGallery && window.TimeLightBridge?.saveToSystemGallery) {
     const ext = recipe.format === "PNG" ? "png" : "jpg";
-    savedToSystem = await window.TimeLightBridge.saveToSystemGallery(
+    void window.TimeLightBridge.saveToSystemGallery(
       photo.blob,
       `TimeLight-${photo.timestamp}.${ext}`,
       { silent: true }
-    );
+    ).then(saved => {
+      if (saved) toast("已存入相册并保存到本地");
+    }).catch(() => {});
   }
-  void refreshLatest().catch(() => {});
-  toast(savedToSystem ? "已存入相册并保存到本地" : "已存入相册");
+  toast("已存入相册");
 }
 
 async function capture() {
@@ -577,7 +601,7 @@ async function capture() {
     if (ratio === "半格") recipe.frames = [first, recipe];
     recipe.lenses = ratio === "半格" ? [first.lens, state.lens] : [state.lens];
     ui.developingOverlay.hidden = false;
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise(resolve => requestAnimationFrame(resolve));
     await persistPhoto(source, recipe, ratio, origin);
     if (ratio === "半格" && state.halfFrame === first) state.halfFrame = null;
   } catch (error) {
@@ -986,7 +1010,12 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("timelight:camera-ready", () => {
-  if (!state.stream && !state.switching) void startDeviceCamera(state.front, false);
+  if (state.stream || state.capturing) return;
+  if (state.switching) {
+    pendingCameraReady = true;
+    return;
+  }
+  void startDeviceCamera(state.front, false);
 });
 
 // Custom Film Roll Darkroom Studio
@@ -1003,9 +1032,9 @@ const STUDIO_PRESETS = {
 const studioUi = {
   root: byId("custom-film-studio"),
   close: byId("studio-close"),
+  compare: byId("studio-compare"),
   save: byId("studio-save"),
   delete: byId("studio-delete"),
-  preview: byId("studio-preview"),
   canister: byId("studio-canister"),
   name: byId("studio-name"),
   colors: byId("studio-colors"),
@@ -1025,46 +1054,14 @@ const studioUi = {
   isCCD: byId("ctrl-ccd")
 };
 let studioDraft = null;
-const studioSample = document.createElement("canvas");
+let studioPreviewRoll = null;
+let studioCompareOriginal = false;
 
-function captureStudioSample() {
-  const w = 240;
-  const h = 180;
-  studioSample.width = w;
-  studioSample.height = h;
-  const ctx = studioSample.getContext("2d");
-  if (state.stream && ui.video.videoWidth > 0 && ui.frame.clientWidth > 0) {
-    try {
-      CameraPhoto.fromView(ui.video, ui.window, ui.frame, {
-        ...frameOptions(),
-        maxDimension: 240,
-        target: studioSample
-      });
-      return;
-    } catch {
-      // Fallback to synthetic scenic sample below
-    }
-  }
-  const sky = ctx.createLinearGradient(0, 0, 0, h * 0.65);
-  sky.addColorStop(0, "#3b7cb8");
-  sky.addColorStop(1, "#f2c894");
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = "#f9e39c";
-  ctx.beginPath();
-  ctx.arc(w * 0.72, h * 0.28, 22, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#2d5a43";
-  ctx.fillRect(0, h * 0.62, w, h * 0.38);
-  ctx.fillStyle = "#d95d4a";
-  ctx.fillRect(w * 0.16, h * 0.42, 48, 66);
-  ctx.fillStyle = "#f4ece0";
-  ctx.fillRect(w * 0.22, h * 0.50, 14, 18);
-  ctx.fillRect(w * 0.44, h * 0.48, 34, 54);
-  ctx.fillStyle = "#52b788";
-  ctx.beginPath();
-  ctx.arc(w * 0.80, h * 0.60, 28, 0, Math.PI * 2);
-  ctx.fill();
+function syncSliderTrack(slider, text) {
+  slider.style.setProperty("--attr-min", slider.min || "0");
+  slider.style.setProperty("--attr-max", slider.max || "100");
+  slider.style.setProperty("--control-value", slider.value);
+  slider.setAttribute("aria-valuetext", text);
 }
 
 function readStudioControls() {
@@ -1093,7 +1090,7 @@ function syncStudioControls() {
   studioUi.exposure.value = String(studioDraft.exposure);
   studioUi.contrast.value = String(studioDraft.contrast);
   studioUi.saturate.value = String(studioDraft.saturate);
-  studioUi.sepia.value = String(studioDraft.sepia);
+  studioUi.sepia.value = String(studioUi.sepia);
   studioUi.hueRotate.value = String(studioDraft.hueRotate);
   studioUi.shadowTemp.value = String(studioDraft.shadowTemp);
   studioUi.highlightTemp.value = String(studioDraft.highlightTemp);
@@ -1105,16 +1102,22 @@ function syncStudioControls() {
   studioUi.leak.checked = Boolean(studioDraft.leak);
   studioUi.isCCD.checked = Boolean(studioDraft.isCCD);
 
-  byId("val-exposure").textContent = Number(studioDraft.exposure).toFixed(2);
-  byId("val-contrast").textContent = Number(studioDraft.contrast).toFixed(2);
-  byId("val-saturate").textContent = Number(studioDraft.saturate).toFixed(2);
-  byId("val-sepia").textContent = `${Math.round(Number(studioDraft.sepia) * 100)}%`;
-  byId("val-hue").textContent = `${Math.round(Number(studioDraft.hueRotate))}°`;
-  byId("val-shadow").textContent = `${Number(studioDraft.shadowTemp) > 0 ? "+" : ""}${Math.round(Number(studioDraft.shadowTemp))}`;
-  byId("val-highlight").textContent = `${Number(studioDraft.highlightTemp) > 0 ? "+" : ""}${Math.round(Number(studioDraft.highlightTemp))}`;
-  byId("val-curve").textContent = Number(studioDraft.curve).toFixed(2);
-  byId("val-grain").textContent = ["无", "细腻", "粗颗粒"][Number(studioDraft.grain)] || "细腻";
-  byId("val-vignette").textContent = ["无", "柔和", "浓郁"][Number(studioDraft.vignette)] || "柔和";
+  const labels = [
+    [studioUi.exposure, "val-exposure", Number(studioDraft.exposure).toFixed(2)],
+    [studioUi.contrast, "val-contrast", Number(studioDraft.contrast).toFixed(2)],
+    [studioUi.saturate, "val-saturate", Number(studioDraft.saturate).toFixed(2)],
+    [studioUi.sepia, "val-sepia", `${Math.round(Number(studioDraft.sepia) * 100)}%`],
+    [studioUi.hueRotate, "val-hue", `${Math.round(Number(studioDraft.hueRotate))}°`],
+    [studioUi.shadowTemp, "val-shadow", `${Number(studioDraft.shadowTemp) > 0 ? "+" : ""}${Math.round(Number(studioDraft.shadowTemp))}`],
+    [studioUi.highlightTemp, "val-highlight", `${Number(studioDraft.highlightTemp) > 0 ? "+" : ""}${Math.round(Number(studioDraft.highlightTemp))}`],
+    [studioUi.curve, "val-curve", Number(studioDraft.curve).toFixed(2)],
+    [studioUi.grain, "val-grain", ["无", "细腻", "粗颗粒"][Number(studioDraft.grain)] || "细腻"],
+    [studioUi.vignette, "val-vignette", ["无", "柔和", "浓郁"][Number(studioDraft.vignette)] || "柔和"]
+  ];
+  for (const [slider, valId, text] of labels) {
+    byId(valId).textContent = text;
+    syncSliderTrack(slider, text);
+  }
 
   for (const dot of studioUi.colors.querySelectorAll("[data-color]")) {
     pressed(dot, dot.dataset.color === studioDraft.bandColor);
@@ -1124,9 +1127,10 @@ function syncStudioControls() {
 function renderStudioPreview() {
   const roll = readStudioControls();
   if (!roll) return;
+  studioPreviewRoll = roll;
   syncStudioControls();
   styleCanister(studioUi.canister, roll);
-  CameraPhoto.develop(studioSample, { roll, ev: 0, light: 1, format: "JPG", isPreview: false }, studioUi.preview);
+  updateView();
 }
 
 function initStudioColors() {
@@ -1151,7 +1155,9 @@ function openCustomStudio(existingRoll = null) {
   if (!customStore) return;
   initStudioColors();
   closeQuickPopover();
-  captureStudioSample();
+  if (!ui.filmTray.hidden) setFilmTray(false);
+  studioCompareOriginal = false;
+  pressed(studioUi.compare, false);
   if (existingRoll?.customDraft) {
     studioDraft = { ...existingRoll.customDraft };
     studioUi.delete.hidden = false;
@@ -1159,7 +1165,7 @@ function openCustomStudio(existingRoll = null) {
     studioDraft = { ...STUDIO_PRESETS.warm, id: null, name: "" };
     studioUi.delete.hidden = true;
   }
-  byId("camera-screen").hidden = true;
+  byId("camera-screen").classList.add("is-studio-open");
   studioUi.root.hidden = false;
   syncStudioControls();
   renderStudioPreview();
@@ -1168,12 +1174,27 @@ function openCustomStudio(existingRoll = null) {
 
 function closeCustomStudio() {
   studioUi.root.hidden = true;
-  byId("camera-screen").hidden = false;
+  byId("camera-screen").classList.remove("is-studio-open");
   studioDraft = null;
+  studioPreviewRoll = null;
+  studioCompareOriginal = false;
+  pressed(studioUi.compare, false);
   updateView();
 }
 
 studioUi.close.addEventListener("click", closeCustomStudio);
+const setCompareMode = active => {
+  if (!studioDraft || studioCompareOriginal === active) return;
+  studioCompareOriginal = active;
+  pressed(studioUi.compare, active);
+  updateView();
+};
+studioUi.compare.addEventListener("pointerdown", () => setCompareMode(true));
+studioUi.compare.addEventListener("pointerup", () => setCompareMode(false));
+studioUi.compare.addEventListener("pointercancel", () => setCompareMode(false));
+studioUi.compare.addEventListener("click", event => {
+  if (event.detail === 0) setCompareMode(!studioCompareOriginal);
+});
 studioUi.save.addEventListener("click", () => {
   if (!studioDraft || !customStore) return;
   readStudioControls();

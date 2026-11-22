@@ -1,7 +1,7 @@
 {
-  "name": "shiguang-picturebook-showcase",
+  "name": "can-mie-rua",
   "version": "1.0.0",
-  "description": "拾光相机、收藏册与立体书",
+  "description": "Can-mie-rua：拟物胶片相机、本地 AI 抠图贴纸、万物图鉴与 3D 立体书",
   "main": "server.js",
   "scripts": {
     "prepare:discovery": "node prepare-discovery.js",

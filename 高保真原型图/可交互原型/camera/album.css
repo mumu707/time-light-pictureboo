@@ -4,8 +4,8 @@
   position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  padding-top: max(22px, env(safe-area-inset-top));
-  padding-bottom: max(14px, env(safe-area-inset-bottom));
+  padding-top: max(16px, env(safe-area-inset-top), var(--apk-safe-top, 0px));
+  padding-bottom: max(14px, env(safe-area-inset-bottom), var(--apk-safe-bottom, 0px));
   background: var(--graphite-surface);
   color: var(--ink);
   isolation: isolate;
@@ -263,7 +263,7 @@
 #gallery-confirm-actions { display: flex; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
 
 @container phone (max-width: 350px) {
-  .gallery { padding-block: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-bottom)); }
+  .gallery { padding-block: max(8px, env(safe-area-inset-top), var(--apk-safe-top, 0px)) max(8px, env(safe-area-inset-bottom), var(--apk-safe-bottom, 0px)); }
   .gallery-header { min-height: 54px; padding-inline: 9px; }
   .gallery-timeline { padding-inline: 9px; }
   .gallery-stage { margin-inline: 9px; }

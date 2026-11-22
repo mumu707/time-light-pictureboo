@@ -11,20 +11,25 @@ function settingsFile() {
 
 async function readSavedKey() {
   try {
-    return JSON.parse(await fs.readFile(settingsFile(), "utf8")).apiKey;
+    const parsed = JSON.parse(await fs.readFile(settingsFile(), "utf8"));
+    return typeof parsed?.apiKey === "string" ? parsed.apiKey.trim() : "";
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    return "";
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return "";
+    throw error;
   }
 }
 
+function envApiKey() {
+  return process.env.DEEPSEEK_API_KEY?.trim() || process.env.BIGMODEL_API_KEY?.trim() || "";
+}
+
 async function getRecognitionKey() {
-  return await readSavedKey() || process.env.BIGMODEL_API_KEY?.trim();
+  return await readSavedKey() || envApiKey();
 }
 
 async function settingsStatus() {
   const saved = Boolean(await readSavedKey());
-  return { configured: saved || Boolean(process.env.BIGMODEL_API_KEY?.trim()), saved };
+  return { configured: saved || Boolean(envApiKey()), saved };
 }
 
 function reply(response, status, body) {
@@ -57,7 +62,7 @@ async function recognitionSettings(request, response) {
     let input;
     try { input = JSON.parse(body); } catch { return reply(response, 400, { error: "无法读取设置。" }); }
     const apiKey = typeof input?.apiKey === "string" ? input.apiKey.trim() : "";
-    if (!/^[\x21-\x7e]{1,512}$/.test(apiKey)) return reply(response, 400, { error: "请输入有效的智谱 API Key。" });
+    if (!/^[\x21-\x7e]{1,512}$/.test(apiKey)) return reply(response, 400, { error: "请输入有效的 DeepSeek API Key。" });
     const file = settingsFile();
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     const temporary = `${file}.${randomUUID()}.tmp`;

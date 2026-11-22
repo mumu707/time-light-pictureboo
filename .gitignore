@@ -8,6 +8,7 @@ node_modules/
 *.pfx
 *.pem
 *.apk
+!Can-mie-rua-v1.0.0-debug.apk
 *.aab
 *.ipa
 .gradle/

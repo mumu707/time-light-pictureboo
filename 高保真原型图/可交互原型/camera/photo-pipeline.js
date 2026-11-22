@@ -99,14 +99,16 @@ window.CameraPhoto = (() => {
     }).finally(() => URL.revokeObjectURL(url));
   }
 
-  // Canvas 2D filter is optional. Use the same color operations on pixel data when absent.
-  function pixelFilter(context, width, height, value, x = 0) {
+  function parseFilterMatrix(value) {
+    let mat = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    let off = [0, 0, 0];
+    if (!value || value === "none") return { mat, off };
     const luma = [.213, .715, .072];
     const sepia = [[.393, .769, .189], [.349, .686, .168], [.272, .534, .131]];
     const hueSin = [[-.213, -.715, .928], [.143, .140, -.283], [-.787, .715, .072]];
-    const operations = Array.from(value.matchAll(/([a-z-]+)\((-?[\d.]+)(?:deg)?\)/g), ([, name, raw]) => {
+    for (const [, name, raw] of value.matchAll(/([a-z-]+)\((-?[\d.]+)(?:deg)?\)/g)) {
       const amount = Number(raw);
-      const matrix = luma.map((_, row) => luma.map((weight, column) => {
+      const a = luma.map((_, row) => luma.map((weight, column) => {
         const identity = row === column ? 1 : 0;
         switch (name) {
           case "grayscale": return identity * (1 - amount) + weight * amount;
@@ -121,23 +123,244 @@ window.CameraPhoto = (() => {
           default: return identity;
         }
       })).flat();
-      return { matrix, offset: name === "contrast" ? 127.5 * (1 - amount) : 0 };
-    });
+      const b = name === "contrast" ? 127.5 * (1 - amount) : 0;
+      mat = [
+        a[0] * mat[0] + a[1] * mat[3] + a[2] * mat[6],
+        a[0] * mat[1] + a[1] * mat[4] + a[2] * mat[7],
+        a[0] * mat[2] + a[1] * mat[5] + a[2] * mat[8],
+        a[3] * mat[0] + a[4] * mat[3] + a[5] * mat[6],
+        a[3] * mat[1] + a[4] * mat[4] + a[5] * mat[7],
+        a[3] * mat[2] + a[4] * mat[5] + a[5] * mat[8],
+        a[6] * mat[0] + a[7] * mat[3] + a[8] * mat[6],
+        a[6] * mat[1] + a[7] * mat[4] + a[8] * mat[7],
+        a[6] * mat[2] + a[7] * mat[5] + a[8] * mat[8]
+      ];
+      off = [
+        a[0] * off[0] + a[1] * off[1] + a[2] * off[2] + b,
+        a[3] * off[0] + a[4] * off[1] + a[5] * off[2] + b,
+        a[6] * off[0] + a[7] * off[1] + a[8] * off[2] + b
+      ];
+    }
+    return { mat, off };
+  }
+
+  function pixelFilter(context, width, height, value, x = 0) {
+    const { mat, off } = parseFilterMatrix(value);
+    const [rr, rg, rb, gr, gg, gb, br, bg, bb] = mat;
+    const [or, og, ob] = off;
     const image = context.getImageData(x, 0, width, height);
     const pixels = image.data;
-    for (const { matrix, offset } of operations) {
-      const [rr, rg, rb, gr, gg, gb, br, bg, bb] = matrix;
-      for (let i = 0; i < pixels.length; i += 4) {
-        const r = pixels[i];
-        const g = pixels[i + 1];
-        const b = pixels[i + 2];
-        pixels[i] = r * rr + g * rg + b * rb + offset;
-        pixels[i + 1] = r * gr + g * gg + b * gb + offset;
-        pixels[i + 2] = r * br + g * bg + b * bb + offset;
-      }
+    for (let i = 0; i < pixels.length; i += 4) {
+      const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+      pixels[i] = r * rr + g * rg + b * rb + or;
+      pixels[i + 1] = r * gr + g * gg + b * gb + og;
+      pixels[i + 2] = r * br + g * bg + b * bb + ob;
     }
     context.putImageData(image, x, 0);
   }
+
+  // Single-pass WebGL film shader accelerates color filter + film look for normal & special lenses alike.
+  const filmGpu = (() => {
+    let glCanvas, gl, program, tex, posBuf, uvBuf, panelBuf, panelCtx, uLoc;
+    let supported = null;
+    let curW = 0, curH = 0;
+
+    const VS = `
+      attribute vec2 aPos;
+      attribute vec2 aUv;
+      varying vec2 vUv;
+      void main() { vUv = aUv; gl_Position = vec4(aPos, 0.0, 1.0); }
+    `;
+
+    const FS = `
+      precision highp float;
+      uniform sampler2D uTex;
+      uniform vec2 uRes;
+      uniform vec3 uRow0, uRow1, uRow2, uOff;
+      uniform int uHasFilm, uMode, uHasLeak;
+      uniform float uCurve, uToe, uVig, uGrainAmp;
+      uniform vec3 uSh, uHi;
+      varying vec2 vUv;
+
+      float sCurve(float v, float curve, float toeNorm) {
+        float s = v * v * (3.0 - 2.0 * v);
+        float c = mix(v, s, curve);
+        return toeNorm + c * (1.0 - toeNorm * 1.15);
+      }
+
+      void main() {
+        vec4 base = texture2D(uTex, vUv);
+        float nx = vUv.x * 2.0 - 1.0;
+        float ny = 1.0 - vUv.y * 2.0;
+        float r2 = nx * nx + ny * ny;
+
+        if (uHasFilm == 1 && base.r < 0.094 && base.g < 0.094 && base.b < 0.094 && r2 > 0.85) {
+          gl_FragColor = base;
+          return;
+        }
+
+        vec3 rgb = vec3(
+          dot(base.rgb, uRow0) + uOff.x,
+          dot(base.rgb, uRow1) + uOff.y,
+          dot(base.rgb, uRow2) + uOff.z
+        );
+        if (uHasFilm == 0) {
+          gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), base.a);
+          return;
+        }
+
+        vec3 c = clamp(rgb, 0.0, 1.0);
+        float toeNorm = uToe / 255.0;
+        vec2 px = floor(vec2(vUv.x * uRes.x, (1.0 - vUv.y) * uRes.y));
+        float rnd = fract(sin(dot(px, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+
+        if (uMode == 1) {
+          float lum = dot(c, vec3(0.299, 0.587, 0.114));
+          float v = sCurve(lum, uCurve, toeNorm);
+          if (uVig > 0.0) v *= max(0.45, 1.0 - uVig * r2 * r2);
+          float nw = 4.0 * v * (1.0 - v);
+          float outV = clamp(v + rnd * (uGrainAmp / 255.0) * nw, 0.0, 1.0);
+          gl_FragColor = vec4(vec3(outV), base.a);
+          return;
+        }
+
+        vec3 s = vec3(
+          sCurve(c.r, uCurve, toeNorm),
+          sCurve(c.g, uCurve, toeNorm),
+          sCurve(c.b, uCurve, toeNorm)
+        );
+        if (uMode == 2) {
+          s = vec3(s.r * 1.08 + s.g * 0.24, s.g * 0.68 + s.r * 0.22, s.b * 0.34);
+        } else if (uMode == 3) {
+          float ml = dot(s, vec3(0.299, 0.587, 0.114));
+          s = mix(vec3(ml), s, 0.62);
+        }
+
+        float luma = clamp(dot(s, vec3(0.213, 0.715, 0.072)), 0.0, 1.0);
+        s += uSh * ((1.0 - luma) * (1.0 - luma)) + uHi * (luma * luma);
+        if (uVig > 0.0) s *= max(0.45, 1.0 - uVig * r2 * r2);
+
+        if (uHasLeak == 1 && nx > 0.22) {
+          float edge = min(1.0, (nx - 0.22) / 0.78);
+          float dy = ny - 0.12;
+          float band = exp(-dy * dy * 3.2) * edge * edge;
+          s += band * vec3(68.0, 26.0, 8.0) / 255.0;
+        }
+
+        float nw = 4.0 * luma * (1.0 - luma);
+        float noise = rnd * (uGrainAmp / 255.0) * nw;
+        s += vec3(noise, noise * 0.96, noise * 0.92);
+        gl_FragColor = vec4(clamp(s, 0.0, 1.0), base.a);
+      }
+    `;
+
+    function init() {
+      if (supported !== null) return supported;
+      try {
+        glCanvas = document.createElement("canvas");
+        gl = glCanvas.getContext("webgl", { alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true });
+        if (!gl) { supported = false; return false; }
+        const compile = (type, src) => {
+          const sh = gl.createShader(type);
+          gl.shaderSource(sh, src);
+          gl.compileShader(sh);
+          return gl.getShaderParameter(sh, gl.COMPILE_STATUS) ? sh : null;
+        };
+        const vs = compile(gl.VERTEX_SHADER, VS);
+        const fs = compile(gl.FRAGMENT_SHADER, FS);
+        if (!vs || !fs) { supported = false; return false; }
+        program = gl.createProgram();
+        gl.attachShader(program, vs);
+        gl.attachShader(program, fs);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) { supported = false; return false; }
+        gl.useProgram(program);
+
+        posBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        const posLoc = gl.getAttribLocation(program, "aPos");
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+        uvBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+        const uvLoc = gl.getAttribLocation(program, "aUv");
+        gl.enableVertexAttribArray(uvLoc);
+        gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 0, 0);
+
+        tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        uLoc = {};
+        for (const name of ["uTex", "uRes", "uRow0", "uRow1", "uRow2", "uOff", "uHasFilm", "uMode", "uHasLeak", "uCurve", "uToe", "uVig", "uGrainAmp", "uSh", "uHi"]) {
+          uLoc[name] = gl.getUniformLocation(program, name);
+        }
+        panelBuf = document.createElement("canvas");
+        panelCtx = panelBuf.getContext("2d");
+        supported = true;
+      } catch {
+        supported = false;
+      }
+      return supported;
+    }
+
+    function render(context, x, width, height, effect, p, roll, isPreview) {
+      if (!init() || width <= 0 || height <= 0) return false;
+      if (gl.isContextLost()) { supported = false; return false; }
+      let texSource = context.canvas;
+      if (x !== 0 || width !== context.canvas.width || height !== context.canvas.height) {
+        if (panelBuf.width !== width) panelBuf.width = width;
+        if (panelBuf.height !== height) panelBuf.height = height;
+        panelCtx.clearRect(0, 0, width, height);
+        panelCtx.drawImage(context.canvas, x, 0, width, height, 0, 0, width, height);
+        texSource = panelBuf;
+      }
+      if (curW !== width || curH !== height) {
+        glCanvas.width = curW = width;
+        glCanvas.height = curH = height;
+        gl.viewport(0, 0, width, height);
+      }
+      const { mat, off } = parseFilterMatrix(effect);
+      gl.useProgram(program);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texSource);
+      gl.uniform1i(uLoc.uTex, 0);
+      gl.uniform2f(uLoc.uRes, width, height);
+      gl.uniform3f(uLoc.uRow0, mat[0], mat[1], mat[2]);
+      gl.uniform3f(uLoc.uRow1, mat[3], mat[4], mat[5]);
+      gl.uniform3f(uLoc.uRow2, mat[6], mat[7], mat[8]);
+      gl.uniform3f(uLoc.uOff, off[0] / 255, off[1] / 255, off[2] / 255);
+      const hasFilm = Boolean(roll) && !isPreview;
+      gl.uniform1i(uLoc.uHasFilm, hasFilm ? 1 : 0);
+      if (hasFilm) {
+        const mode = p.isMono ? 1 : p.id === "32" ? 2 : p.id === "27" ? 3 : 0;
+        gl.uniform1i(uLoc.uMode, mode);
+        gl.uniform1i(uLoc.uHasLeak, (roll.leak || 0) > 0 && !p.isMono ? 1 : 0);
+        gl.uniform1f(uLoc.uCurve, p.curve);
+        gl.uniform1f(uLoc.uToe, p.toe);
+        gl.uniform1f(uLoc.uVig, (roll.vignette || 0) * 0.12);
+        gl.uniform1f(uLoc.uGrainAmp, (roll.grain || 0) * 4.8 + 1.6);
+        gl.uniform3f(uLoc.uSh, p.shR / 255, p.shG / 255, p.shB / 255);
+        gl.uniform3f(uLoc.uHi, p.hiR / 255, p.hiG / 255, p.hiB / 255);
+      }
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      context.clearRect(x, 0, width, height);
+      context.drawImage(glCanvas, 0, 0, width, height, x, 0, width, height);
+      return true;
+    }
+
+    return { render };
+  })();
 
   function rollToneProfile(roll) {
     if (roll?.customTone) {
@@ -215,191 +438,188 @@ window.CameraPhoto = (() => {
     return { isMono, shR, shG, shB, hiR, hiG, hiB, toe, curve, id };
   }
 
-  function applyFilmLook(context, x, width, height, roll, isPreview = false) {
-    if (!roll || width <= 4 || height <= 4) return;
-    const p = rollToneProfile(roll);
-    const vigStrength = (roll.vignette || 0) * 0.12;
-    const grainAmp = isPreview ? 0 : (roll.grain || 0) * 4.8 + 1.6;
-    const hasLeak = !isPreview && (roll.leak || 0) > 0 && !p.isMono;
-    const isHalation = !isPreview && (Boolean(roll.halation) || p.id === "16" || p.id === "14" || p.id === "32" || p.id === "33" || p.id === "34");
-    const bloomStrength = isPreview ? 0 : (roll.bloom || 0);
-
-    // 1. Highlight Bloom & Movie Halation (drawn before grain/date stamp)
-    if (bloomStrength >= 10) {
-      const bw = Math.max(16, Math.min(112, Math.round(width * 0.14)));
-      const bh = Math.max(16, Math.min(112, Math.round(height * 0.14)));
-      if (bloomCanvas.width !== bw) bloomCanvas.width = bw;
-      if (bloomCanvas.height !== bh) bloomCanvas.height = bh;
-      bloomCtx.clearRect(0, 0, bw, bh);
-      bloomCtx.drawImage(context.canvas, x, 0, width, height, 0, 0, bw, bh);
-      const bImg = bloomCtx.getImageData(0, 0, bw, bh);
-      const bd = bImg.data;
-      for (let i = 0; i < bd.length; i += 4) {
-        const l = 0.213 * bd[i] + 0.715 * bd[i + 1] + 0.072 * bd[i + 2];
-        if (l > 202) {
-          const factor = (l - 202) / 53;
-          if (isHalation) {
-            bd[i] = Math.min(255, 255 * factor);
-            bd[i + 1] = Math.min(255, 92 * factor);
-            bd[i + 2] = Math.min(255, 52 * factor);
-          } else {
-            bd[i] = bd[i] * factor;
-            bd[i + 1] = bd[i + 1] * factor * 0.98;
-            bd[i + 2] = bd[i + 2] * factor * 0.94;
-          }
-          bd[i + 3] = 255;
+  function applyBloom(context, x, width, height, roll, p) {
+    const isHalation = Boolean(roll.halation) || p.id === "16" || p.id === "14" || p.id === "32" || p.id === "33" || p.id === "34";
+    const bloomStrength = roll.bloom || 0;
+    if (bloomStrength < 10) return;
+    const bw = Math.max(16, Math.min(112, Math.round(width * 0.14)));
+    const bh = Math.max(16, Math.min(112, Math.round(height * 0.14)));
+    if (bloomCanvas.width !== bw) bloomCanvas.width = bw;
+    if (bloomCanvas.height !== bh) bloomCanvas.height = bh;
+    bloomCtx.clearRect(0, 0, bw, bh);
+    bloomCtx.drawImage(context.canvas, x, 0, width, height, 0, 0, bw, bh);
+    const bImg = bloomCtx.getImageData(0, 0, bw, bh);
+    const bd = bImg.data;
+    for (let i = 0; i < bd.length; i += 4) {
+      const l = 0.213 * bd[i] + 0.715 * bd[i + 1] + 0.072 * bd[i + 2];
+      if (l > 202) {
+        const factor = (l - 202) / 53;
+        if (isHalation) {
+          bd[i] = Math.min(255, 255 * factor);
+          bd[i + 1] = Math.min(255, 92 * factor);
+          bd[i + 2] = Math.min(255, 52 * factor);
         } else {
-          bd[i] = bd[i + 1] = bd[i + 2] = 0;
-          bd[i + 3] = 0;
+          bd[i] = bd[i] * factor;
+          bd[i + 1] = bd[i + 1] * factor * 0.98;
+          bd[i + 2] = bd[i + 2] * factor * 0.94;
         }
+        bd[i + 3] = 255;
+      } else {
+        bd[i] = bd[i + 1] = bd[i + 2] = 0;
+        bd[i + 3] = 0;
       }
-      bloomCtx.putImageData(bImg, 0, 0);
-      context.save();
-      context.globalCompositeOperation = "screen";
-      context.globalAlpha = Math.min(isHalation ? 0.34 : 0.22, bloomStrength / 115);
-      if ("filter" in context) context.filter = "blur(6px)";
-      context.drawImage(bloomCanvas, 0, 0, bw, bh, x, 0, width, height);
-      context.restore();
+    }
+    bloomCtx.putImageData(bImg, 0, 0);
+    context.save();
+    context.beginPath();
+    context.rect(x, 0, width, height);
+    context.clip();
+    context.globalCompositeOperation = "screen";
+    context.globalAlpha = Math.min(isHalation ? 0.34 : 0.22, bloomStrength / 115);
+    if ("filter" in context) context.filter = "blur(6px)";
+    context.drawImage(bloomCanvas, 0, 0, bw, bh, x, 0, width, height);
+    context.restore();
+  }
+
+  function applyFilmLookCpu(context, x, width, height, roll, p) {
+    const vigStrength = (roll.vignette || 0) * 0.12;
+    const grainAmp = (roll.grain || 0) * 4.8 + 1.6;
+    const hasLeak = (roll.leak || 0) > 0 && !p.isMono;
+    const image = context.getImageData(x, 0, width, height);
+    const d = image.data;
+    const halfW = width * 0.5;
+    const halfH = height * 0.5;
+    const invHalfW = 1 / halfW;
+    const invHalfH = 1 / halfH;
+
+    const sLut = new Float32Array(256);
+    for (let v = 0; v < 256; v++) {
+      const t = v / 255;
+      const s = t * t * (3 - 2 * t);
+      const curved = t * (1 - p.curve) + s * p.curve;
+      sLut[v] = p.toe + curved * (255 - p.toe * 1.15);
+    }
+    const nx2Arr = new Float32Array(width);
+    const leakEdgeArr = hasLeak ? new Float32Array(width) : null;
+    for (let col = 0; col < width; col++) {
+      const nx = (col - halfW) * invHalfW;
+      nx2Arr[col] = nx * nx;
+      if (hasLeak && nx > 0.22) {
+        const edge = Math.min(1, (nx - 0.22) / 0.78);
+        leakEdgeArr[col] = edge * edge;
+      }
+    }
+    const ny2Arr = new Float32Array(height);
+    const leakBandYArr = hasLeak ? new Float32Array(height) : null;
+    for (let row = 0; row < height; row++) {
+      const ny = (row - halfH) * invHalfH;
+      ny2Arr[row] = ny * ny;
+      if (hasLeak) {
+        const dy = ny - 0.12;
+        leakBandYArr[row] = Math.exp(-dy * dy * 3.2);
+      }
     }
 
-    // 2. Single-pass Split-Toning + Film S-Curve + Vignette + Leak + Silver Grain
-    if (!isPreview) {
-      const image = context.getImageData(x, 0, width, height);
-      const d = image.data;
-      const halfW = width * 0.5;
-      const halfH = height * 0.5;
-      const invHalfW = 1 / halfW;
-      const invHalfH = 1 / halfH;
-
-      // Precompute 256-entry Film S-Curve + Matte Toe LUT + separable 1D vignette/leak tables
-      const sLut = new Float32Array(256);
-      for (let v = 0; v < 256; v++) {
-        const t = v / 255;
-        const s = t * t * (3 - 2 * t);
-        const curved = t * (1 - p.curve) + s * p.curve;
-        sLut[v] = p.toe + curved * (255 - p.toe * 1.15);
-      }
-      const nxArr = new Float32Array(width);
-      const nx2Arr = new Float32Array(width);
-      const leakEdgeArr = hasLeak ? new Float32Array(width) : null;
+    for (let row = 0; row < height; row++) {
+      const ny2 = ny2Arr[row];
+      const leakY = hasLeak ? leakBandYArr[row] : 0;
+      const rowOffset = row * width;
+      const rowHash = Math.imul(row + 17, 668265263);
+      const monoRowHash = Math.imul(row + 29, 668265263);
       for (let col = 0; col < width; col++) {
-        const nx = (col - halfW) * invHalfW;
-        nxArr[col] = nx;
-        nx2Arr[col] = nx * nx;
-        if (hasLeak && nx > 0.22) {
-          const edge = Math.min(1, (nx - 0.22) / 0.78);
-          leakEdgeArr[col] = edge * edge;
-        }
-      }
-      const ny2Arr = new Float32Array(height);
-      const leakBandYArr = hasLeak ? new Float32Array(height) : null;
-      for (let row = 0; row < height; row++) {
-        const ny = (row - halfH) * invHalfH;
-        ny2Arr[row] = ny * ny;
-        if (hasLeak) {
-          const dy = ny - 0.12;
-          leakBandYArr[row] = Math.exp(-dy * dy * 3.2);
-        }
-      }
+        const i = (rowOffset + col) * 4;
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const r2 = nx2Arr[col] + ny2;
+        if (r < 24 && g < 24 && b < 24 && r2 > 0.85) continue;
 
-      for (let row = 0; row < height; row++) {
-        const ny2 = ny2Arr[row];
-        const leakY = hasLeak ? leakBandYArr[row] : 0;
-        const rowOffset = row * width;
-        const rowHash = Math.imul(row + 17, 668265263);
-        const monoRowHash = Math.imul(row + 29, 668265263);
-        for (let col = 0; col < width; col++) {
-          const i = (rowOffset + col) * 4;
-          const r = d[i], g = d[i + 1], b = d[i + 2];
-          const r2 = nx2Arr[col] + ny2;
-
-          // Keep masked optical black corners (e.g. fisheye mask) pure and dark
-          if (r < 24 && g < 24 && b < 24 && r2 > 0.85) continue;
-
-          if (p.isMono) {
-            const lum = Math.min(255, Math.max(0, (0.299 * r + 0.587 * g + 0.114 * b + 0.5) | 0));
-            let v = sLut[lum];
-            if (vigStrength > 0) {
-              v *= Math.max(0.45, 1 - vigStrength * r2 * r2);
-            }
-            const tNorm = v / 255;
-            const nWeight = 4 * tNorm * (1 - tNorm);
-            const h = (Math.imul(col + 13, 374761393) ^ monoRowHash) >>> 0;
-            const noise = ((Math.imul(h ^ (h >>> 13), 1274126177) >>> 0) / 4294967295 - 0.5) * grainAmp * nWeight;
-            const out = Math.min(255, Math.max(0, (v + noise + 0.5) | 0));
-            d[i] = d[i + 1] = d[i + 2] = out;
-            continue;
-          }
-
-          let sr = sLut[r];
-          let sg = sLut[g];
-          let sb = sLut[b];
-
-          if (p.id === "32") {
-            const rr = sr * 1.08 + sg * 0.24;
-            const gg = sg * 0.68 + sr * 0.22;
-            const bb = sb * 0.34;
-            sr = rr; sg = gg; sb = bb;
-          } else if (p.id === "27") {
-            const lum = 0.299 * sr + 0.587 * sg + 0.114 * sb;
-            sr = sr * 0.62 + lum * 0.38;
-            sg = sg * 0.62 + lum * 0.38;
-            sb = sb * 0.62 + lum * 0.38;
-          }
-
-          const lumaNorm = Math.min(1, Math.max(0, (0.213 * sr + 0.715 * sg + 0.072 * sb) / 255));
-          const shW = (1 - lumaNorm) * (1 - lumaNorm);
-          const hiW = lumaNorm * lumaNorm;
-          sr += p.shR * shW + p.hiR * hiW;
-          sg += p.shG * shW + p.hiG * hiW;
-          sb += p.shB * shW + p.hiB * hiW;
-
-          if (vigStrength > 0) {
-            const vig = Math.max(0.45, 1 - vigStrength * r2 * r2);
-            sr *= vig; sg *= vig; sb *= vig;
-          }
-
-          // Edge organic warm amber/coral leak on right edge (leaves top-left untouched)
-          if (hasLeak && leakEdgeArr[col] > 0) {
-            const band = leakY * leakEdgeArr[col];
-            sr += band * 68;
-            sg += band * 26;
-            sb += band * 8;
-          }
-
-          // Midtone-weighted organic silver grain
-          const nWeight = 4 * lumaNorm * (1 - lumaNorm);
-          const h = (Math.imul(col + 31, 374761393) ^ rowHash) >>> 0;
+        if (p.isMono) {
+          const lum = Math.min(255, Math.max(0, (0.299 * r + 0.587 * g + 0.114 * b + 0.5) | 0));
+          let v = sLut[lum];
+          if (vigStrength > 0) v *= Math.max(0.45, 1 - vigStrength * r2 * r2);
+          const tNorm = v / 255;
+          const nWeight = 4 * tNorm * (1 - tNorm);
+          const h = (Math.imul(col + 13, 374761393) ^ monoRowHash) >>> 0;
           const noise = ((Math.imul(h ^ (h >>> 13), 1274126177) >>> 0) / 4294967295 - 0.5) * grainAmp * nWeight;
-
-          d[i] = sr + noise;
-          d[i + 1] = sg + noise * 0.96;
-          d[i + 2] = sb + noise * 0.92;
+          const out = Math.min(255, Math.max(0, (v + noise + 0.5) | 0));
+          d[i] = d[i + 1] = d[i + 2] = out;
+          continue;
         }
-      }
-      context.putImageData(image, x, 0);
-    }
 
-    // 3. Y2K CCD 2004 Orange Digital Date Stamp
-    if (roll.isCCD && !isPreview && width >= 120 && height >= 80) {
-      const now = new Date();
-      const yy = String(now.getFullYear()).slice(-2);
-      const mm = String(now.getMonth() + 1).padStart(2, "0");
-      const dd = String(now.getDate()).padStart(2, "0");
-      const stamp = `'${yy} ${mm} ${dd}`;
-      const fontSize = Math.max(12, Math.round(Math.min(width, height) * 0.036));
-      const padX = Math.max(12, Math.round(width * 0.045));
-      const padY = Math.max(10, Math.round(height * 0.04));
-      context.save();
-      context.font = `700 ${fontSize}px ui-monospace, "Courier New", monospace`;
-      context.textAlign = "right";
-      context.textBaseline = "bottom";
-      context.shadowColor = "rgba(255, 86, 12, 0.85)";
-      context.shadowBlur = Math.max(2, fontSize * 0.25);
-      context.fillStyle = "#ff8524";
-      context.fillText(stamp, x + width - padX, height - padY);
-      context.restore();
+        let sr = sLut[r], sg = sLut[g], sb = sLut[b];
+        if (p.id === "32") {
+          const rr = sr * 1.08 + sg * 0.24;
+          const gg = sg * 0.68 + sr * 0.22;
+          const bb = sb * 0.34;
+          sr = rr; sg = gg; sb = bb;
+        } else if (p.id === "27") {
+          const lum = 0.299 * sr + 0.587 * sg + 0.114 * sb;
+          sr = sr * 0.62 + lum * 0.38;
+          sg = sg * 0.62 + lum * 0.38;
+          sb = sb * 0.62 + lum * 0.38;
+        }
+
+        const lumaNorm = Math.min(1, Math.max(0, (0.213 * sr + 0.715 * sg + 0.072 * sb) / 255));
+        const shW = (1 - lumaNorm) * (1 - lumaNorm);
+        const hiW = lumaNorm * lumaNorm;
+        sr += p.shR * shW + p.hiR * hiW;
+        sg += p.shG * shW + p.hiG * hiW;
+        sb += p.shB * shW + p.hiB * hiW;
+
+        if (vigStrength > 0) {
+          const vig = Math.max(0.45, 1 - vigStrength * r2 * r2);
+          sr *= vig; sg *= vig; sb *= vig;
+        }
+        if (hasLeak && leakEdgeArr[col] > 0) {
+          const band = leakY * leakEdgeArr[col];
+          sr += band * 68; sg += band * 26; sb += band * 8;
+        }
+        const nWeight = 4 * lumaNorm * (1 - lumaNorm);
+        const h = (Math.imul(col + 31, 374761393) ^ rowHash) >>> 0;
+        const noise = ((Math.imul(h ^ (h >>> 13), 1274126177) >>> 0) / 4294967295 - 0.5) * grainAmp * nWeight;
+        d[i] = sr + noise;
+        d[i + 1] = sg + noise * 0.96;
+        d[i + 2] = sb + noise * 0.92;
+      }
     }
+    context.putImageData(image, x, 0);
+  }
+
+  function drawCcdDateStamp(context, x, width, height) {
+    const now = new Date();
+    const yy = String(now.getFullYear()).slice(-2);
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const stamp = `'${yy} ${mm} ${dd}`;
+    const fontSize = Math.max(12, Math.round(Math.min(width, height) * 0.036));
+    const padX = Math.max(12, Math.round(width * 0.045));
+    const padY = Math.max(10, Math.round(height * 0.04));
+    context.save();
+    context.font = `700 ${fontSize}px ui-monospace, "Courier New", monospace`;
+    context.textAlign = "right";
+    context.textBaseline = "bottom";
+    context.shadowColor = "rgba(255, 86, 12, 0.85)";
+    context.shadowBlur = Math.max(2, fontSize * 0.25);
+    context.fillStyle = "#ff8524";
+    context.fillText(stamp, x + width - padX, height - padY);
+    context.restore();
+  }
+
+  function processPanel(context, source, sx, sw, sh, dx, dw, dh, effect, roll, stickers, isPreview) {
+    const p = roll ? rollToneProfile(roll) : null;
+    const useGpu = effect !== "none" || (roll && !isPreview);
+    context.drawImage(source, sx, 0, sw, sh, dx, 0, dw, dh);
+    if (roll && !isPreview && dw > 4 && dh > 4) {
+      applyBloom(context, dx, dw, dh, roll, p);
+    }
+    const gpuRendered = useGpu && dw > 4 && dh > 4 && filmGpu.render(context, dx, dw, dh, effect, p, roll, isPreview);
+    if (useGpu && !gpuRendered) {
+      if (effect !== "none") pixelFilter(context, dw, dh, effect, dx);
+      if (roll && !isPreview && dw > 4 && dh > 4) applyFilmLookCpu(context, dx, dw, dh, roll, p);
+    }
+    if (roll?.isCCD && !isPreview && dw >= 120 && dh >= 80) {
+      drawCcdDateStamp(context, dx, dw, dh);
+    }
+    CameraStickers.draw(context, stickers, dx, dw, dh);
   }
 
   function develop(source, { roll, ev, light, format, lenses, frames, paper, paperAspect, stickers, isPreview }, target = null) {
@@ -413,7 +633,7 @@ window.CameraPhoto = (() => {
     const result = reuseTargets
       ? canvas(width * scale, height * scale, developWorkCanvas)
       : canvas(width * scale, height * scale);
-    const context = result.getContext("2d", { willReadFrequently: !isPreview });
+    const context = result.getContext("2d");
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
     context.clearRect(0, 0, result.width, result.height);
@@ -430,24 +650,13 @@ window.CameraPhoto = (() => {
         frames.forEach((frame, index) => {
           const sourceX = index ? width - sourcePanel : 0;
           const outputX = index ? result.width - outputPanel : 0;
-          const effect = filter(frame.roll, 0, frame.light);
-          if ("filter" in context) context.filter = effect;
-          context.drawImage(source, sourceX, 0, sourcePanel, height,
-            outputX, 0, outputPanel, result.height);
-          if ("filter" in context) context.filter = "none";
-          if (effect !== "none" && !("filter" in context)) pixelFilter(context, outputPanel, result.height, effect, outputX);
-          applyFilmLook(context, outputX, outputPanel, result.height, frame.roll, isPreview);
-          CameraStickers.draw(context, frame.stickers, outputX, outputPanel, result.height);
+          processPanel(context, source, sourceX, sourcePanel, height,
+            outputX, outputPanel, result.height, filter(frame.roll, 0, frame.light), frame.roll, frame.stickers, isPreview);
         });
       }
     } else {
-      const effect = filter(roll, ev, light);
-      if ("filter" in context) context.filter = effect;
-      context.drawImage(source, 0, 0, result.width, result.height);
-      if ("filter" in context) context.filter = "none";
-      if (effect !== "none" && !("filter" in context)) pixelFilter(context, result.width, result.height, effect);
-      applyFilmLook(context, 0, result.width, result.height, roll, isPreview);
-      CameraStickers.draw(context, stickers, 0, result.width, result.height);
+      processPanel(context, source, 0, width, height,
+        0, result.width, result.height, filter(roll, ev, light), roll, stickers, isPreview);
     }
 
     return CameraPaper.draw(result, target || document.createElement("canvas"), paper, paperAspect);

@@ -3,8 +3,6 @@
 (() => {
   const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
   const CUSTOM_KEY_STORAGE = "timelight-custom-recognition-key";
-  const MASK = "TimeLight-DSV41-2026";
-  const EMBEDDED_KEY_B64 = "JwJAVn5dX15BHydmb1EEGQIBVA5mCl1VfVhQWkAbdjc0UFI=";
   const CATEGORIES = ["动物", "植物", "食物", "饮品", "甜点", "花卉", "文具", "家具", "灯饰", "玩具", "器物", "手作", "乐器", "复古", "建筑", "其他"];
 
   function buildAiTags(output) {
@@ -21,20 +19,6 @@
     return [...new Set([...raw, ...derived].filter(Boolean))].slice(0, 5);
   }
 
-  function decodeBuiltinKey() {
-    if (!EMBEDDED_KEY_B64) return "";
-    try {
-      const bin = atob(EMBEDDED_KEY_B64);
-      let out = "";
-      for (let i = 0; i < bin.length; i++) {
-        out += String.fromCharCode(bin.charCodeAt(i) ^ MASK.charCodeAt(i % MASK.length));
-      }
-      return out;
-    } catch {
-      return "";
-    }
-  }
-
   function getSavedCustomKey() {
     try {
       return (localStorage.getItem(CUSTOM_KEY_STORAGE) || "").trim();
@@ -44,7 +28,7 @@
   }
 
   function getEffectiveKey() {
-    return getSavedCustomKey() || decodeBuiltinKey();
+    return getSavedCustomKey();
   }
 
   function jsonResponse(status, body) {
@@ -58,13 +42,11 @@
     const method = (init.method || "GET").toUpperCase();
     if (method === "GET") {
       const custom = Boolean(getSavedCustomKey());
-      const builtin = Boolean(decodeBuiltinKey());
-      return jsonResponse(200, { configured: custom || builtin, saved: custom, builtin });
+      return jsonResponse(200, { configured: custom, saved: custom });
     }
     if (method === "DELETE") {
       try { localStorage.removeItem(CUSTOM_KEY_STORAGE); } catch {}
-      const builtin = Boolean(decodeBuiltinKey());
-      return jsonResponse(200, { configured: builtin, saved: false, builtin });
+      return jsonResponse(200, { configured: false, saved: false });
     }
     if (method === "PUT") {
       let input;
@@ -73,12 +55,12 @@
       }
       const apiKey = typeof input?.apiKey === "string" ? input.apiKey.trim() : "";
       if (!/^[\x21-\x7e]{1,512}$/.test(apiKey)) {
-        return jsonResponse(400, { error: "请输入有效的 API Key。" });
+        return jsonResponse(400, { error: "请输入有效的 DeepSeek API Key。" });
       }
       try { localStorage.setItem(CUSTOM_KEY_STORAGE, apiKey); } catch {
         return jsonResponse(500, { error: "无法保存本机配置，请重试。" });
       }
-      return jsonResponse(200, { configured: true, saved: true, builtin: Boolean(decodeBuiltinKey()) });
+      return jsonResponse(200, { configured: true, saved: true });
     }
     return jsonResponse(405, { error: "操作不受支持。" });
   }
@@ -152,8 +134,16 @@
       let output;
       try {
         const plain = typeof content === "string" ? content.trim() : "";
-        const fenced = /^\x60\x60\x60(?:json)?\s*([\s\S]*?)\s*\x60\x60\x60$/i.exec(plain);
-        output = JSON.parse(fenced?.[1] ?? plain);
+        const fenced = /\x60\x60\x60(?:json)?\s*([\s\S]*?)\s*\x60\x60\x60/i.exec(plain);
+        const candidate = (fenced?.[1] ?? plain).trim();
+        try {
+          output = JSON.parse(candidate);
+        } catch {
+          const start = candidate.indexOf("{");
+          const end = candidate.lastIndexOf("}");
+          if (start >= 0 && end > start) output = JSON.parse(candidate.slice(start, end + 1));
+          else throw new Error("invalid json");
+        }
       } catch {
         return jsonResponse(502, { error: "识别结果不完整，请重新识别。" });
       }
@@ -190,21 +180,38 @@
     try { pathname = new URL(rawUrl, location.href).pathname; } catch {}
 
     if (pathname === "/api/recognition-settings" || pathname === "/api/identify-object") {
+      const resolveLocalInit = async () => {
+        if (init) return init;
+        if (input instanceof Request) {
+          const body = input.method && !["GET", "HEAD"].includes(input.method.toUpperCase())
+            ? await input.clone().text().catch(() => "")
+            : undefined;
+          return { method: input.method, headers: input.headers, signal: input.signal, body };
+        }
+        return {};
+      };
       if (isEmbeddedRuntime()) {
+        const localInit = await resolveLocalInit();
         return pathname === "/api/recognition-settings"
-          ? handleSettings(init)
-          : handleIdentify(init, originalFetch);
+          ? handleSettings(localInit)
+          : handleIdentify(localInit, originalFetch);
       }
       try {
         const res = await originalFetch(input, init);
         if (res.status !== 404) return res;
-      } catch {}
+      } catch (error) {
+        if (error?.name === "AbortError" || init?.signal?.aborted || (input instanceof Request && input.signal?.aborted)) {
+          throw error;
+        }
+        throw error;
+      }
+      const localInit = await resolveLocalInit();
       return pathname === "/api/recognition-settings"
-        ? handleSettings(init)
-        : handleIdentify(init, originalFetch);
+        ? handleSettings(localInit)
+        : handleIdentify(localInit, originalFetch);
     }
     return originalFetch(input, init);
   };
 
-  window.TimeLightCloud = { getEffectiveKey, hasBuiltinKey: () => Boolean(decodeBuiltinKey()) };
+  window.TimeLightCloud = { getEffectiveKey };
 })();

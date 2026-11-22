@@ -24,10 +24,14 @@ window.CameraAlbum = (() => {
           : request.transaction.objectStore(previews);
         if (event.oldVersion < 2) previewStore.createIndex("newest", ["timestamp", "id"]);
         if (event.oldVersion < 4) {
-          const stickers = database.createObjectStore("stickers", { keyPath: "id" });
-          stickers.createIndex("newest", "timestamp");
-          const entries = database.createObjectStore("compendium", { keyPath: "key" });
-          entries.createIndex("newest", "updatedAt");
+          if (!database.objectStoreNames.contains("stickers")) {
+            const stickers = database.createObjectStore("stickers", { keyPath: "id" });
+            stickers.createIndex("newest", "timestamp");
+          }
+          if (!database.objectStoreNames.contains("compendium")) {
+            const entries = database.createObjectStore("compendium", { keyPath: "key" });
+            entries.createIndex("newest", "updatedAt");
+          }
         }
         if (event.oldVersion > 0) {
           photoStore.openCursor().onsuccess = event => {
@@ -47,6 +51,7 @@ window.CameraAlbum = (() => {
         resolve(database);
       };
       request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error("数据库正在被其他页面占用，请刷新后重试。"));
     }).catch(error => {
       connection = undefined;
       throw error;
@@ -163,7 +168,8 @@ window.CameraAlbum = (() => {
       const validCategories = ["动物", "植物", "食物", "饮品", "甜点", "花卉", "文具", "家具", "灯饰", "玩具", "器物", "手作", "乐器", "复古", "建筑", "其他"];
       if (typeof details?.name !== "string") return Promise.reject(new Error("请填写物体名称。"));
       const name = details.name.normalize("NFKC").trim().replace(/\s+/g, " ");
-      if (!name || name.length > 40 || typeof details.observation !== "string" || details.observation.length > 120 ||
+      const observation = typeof details?.observation === "string" ? details.observation.trim() : "";
+      if (!name || name.length > 40 || typeof details?.observation !== "string" || observation.length > 120 ||
           !validCategories.includes(details.category)) {
         return Promise.reject(new Error("请填写名称、分类和简短观察。"));
       }
@@ -185,7 +191,7 @@ window.CameraAlbum = (() => {
               done({ conflict: previous });
               return;
             }
-            const entry = { key, name, category: details.category, observation: details.observation.trim(),
+            const entry = { key, name, category: details.category, observation,
               tags, purpose, stickerId, createdAt: previous?.createdAt || Date.now(), updatedAt: Date.now() };
             entries.put(entry);
             if (oldKey && oldKey !== key) {

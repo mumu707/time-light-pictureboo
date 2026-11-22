@@ -183,9 +183,11 @@ window.CameraStickers = (() => {
           button.type = "button";
           button.className = "choice";
           const thumbnail = document.createElement("img");
-          const url = URL.createObjectURL(sticker.thumbnail);
-          thumbnail.onload = thumbnail.onerror = () => URL.revokeObjectURL(url);
-          thumbnail.src = url;
+          if (sticker.thumbnail instanceof Blob) {
+            const url = URL.createObjectURL(sticker.thumbnail);
+            thumbnail.onload = thumbnail.onerror = () => URL.revokeObjectURL(url);
+            thumbnail.src = url;
+          }
           thumbnail.alt = "";
           const caption = document.createElement("span");
           caption.textContent = name;

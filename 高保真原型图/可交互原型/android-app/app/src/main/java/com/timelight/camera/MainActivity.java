@@ -8,6 +8,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -16,6 +17,10 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
@@ -48,6 +53,9 @@ public class MainActivity extends Activity {
     private WebView webView;
     private PermissionRequest pendingWebPermission;
     private ValueCallback<Uri[]> filePathCallback;
+    private boolean startupPermissionInFlight;
+    private float safeTopDp = 0f;
+    private float safeBottomDp = 0f;
 
     private static final Map<String, String> MIME_TYPES = new HashMap<>();
     static {
@@ -72,11 +80,25 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        enableEdgeToEdge();
 
         webView = new WebView(this);
         webView.setBackgroundColor(0xFF1D1D1B);
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         setContentView(webView);
+        webView.setOnApplyWindowInsetsListener((v, insets) -> {
+            float density = Math.max(1f, getResources().getDisplayMetrics().density);
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets sys = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                safeTopDp = sys.top / density;
+                safeBottomDp = sys.bottom / density;
+            } else {
+                safeTopDp = insets.getSystemWindowInsetTop() / density;
+                safeBottomDp = insets.getSystemWindowInsetBottom() / density;
+            }
+            applySafeAreaVars();
+            return insets;
+        });
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -117,12 +139,27 @@ public class MainActivity extends Activity {
                 }
                 return false;
             }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                applySafeAreaVars();
+            }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onPermissionRequest(PermissionRequest request) {
                 runOnUiThread(() -> handleWebPermission(request));
+            }
+
+            @Override
+            public void onPermissionRequestCanceled(PermissionRequest request) {
+                runOnUiThread(() -> {
+                    if (pendingWebPermission == request) {
+                        pendingWebPermission = null;
+                    }
+                });
             }
 
             @Override
@@ -158,6 +195,44 @@ public class MainActivity extends Activity {
         requestStartupPermissions();
     }
 
+    @SuppressWarnings("deprecation")
+    private void enableEdgeToEdge() {
+        Window window = getWindow();
+        window.setStatusBarColor(Color.TRANSPARENT);
+        window.setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= 29) {
+            window.setStatusBarContrastEnforced(false);
+            window.setNavigationBarContrastEnforced(false);
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams lp = window.getAttributes();
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            window.setAttributes(lp);
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsAppearance(0,
+                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
+            }
+        } else {
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+    }
+
+    private void applySafeAreaVars() {
+        if (webView == null) return;
+        String js = String.format(Locale.US,
+                "document.documentElement.style.setProperty('--apk-safe-top','%.1fpx');"
+                        + "document.documentElement.style.setProperty('--apk-safe-bottom','%.1fpx');",
+                safeTopDp, safeBottomDp);
+        webView.evaluateJavascript(js, null);
+    }
+
     private void requestStartupPermissions() {
         java.util.List<String> needed = new java.util.ArrayList<>();
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -180,6 +255,7 @@ public class MainActivity extends Activity {
             }
         }
         if (!needed.isEmpty()) {
+            startupPermissionInFlight = true;
             requestPermissions(needed.toArray(new String[0]), REQ_STARTUP_PERMISSIONS);
         }
     }
@@ -237,11 +313,13 @@ public class MainActivity extends Activity {
             }
         }
         if (needsCamera && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            if (pendingWebPermission != null) {
+            if (pendingWebPermission != null && pendingWebPermission != request) {
                 pendingWebPermission.deny();
             }
             pendingWebPermission = request;
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERMISSION);
+            if (!startupPermissionInFlight) {
+                requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERMISSION);
+            }
             return;
         }
         request.grant(request.getResources());
@@ -251,7 +329,18 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_STARTUP_PERMISSIONS) {
-            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            startupPermissionInFlight = false;
+            boolean cameraGranted = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+            if (pendingWebPermission != null) {
+                PermissionRequest req = pendingWebPermission;
+                pendingWebPermission = null;
+                if (cameraGranted) {
+                    req.grant(req.getResources());
+                } else {
+                    req.deny();
+                }
+            }
+            if (cameraGranted) {
                 if (webView != null) {
                     webView.post(() -> webView.evaluateJavascript(
                             "window.dispatchEvent(new CustomEvent('timelight:camera-ready'))", null));
@@ -309,6 +398,40 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) {
+            webView.onResume();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (webView != null) {
+            webView.onPause();
+        }
+        super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (pendingWebPermission != null) {
+            pendingWebPermission.deny();
+            pendingWebPermission = null;
+        }
+        if (filePathCallback != null) {
+            filePathCallback.onReceiveValue(null);
+            filePathCallback = null;
+        }
+        if (webView != null) {
+            webView.stopLoading();
+            webView.destroy();
+            webView = null;
+        }
+        super.onDestroy();
+    }
+
+    @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         if (webView != null) {
@@ -324,6 +447,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public boolean saveImageToGallery(String dataUrl, String fileName, boolean silent) {
+            Uri insertedUri = null;
             try {
                 if (dataUrl == null || !dataUrl.startsWith("data:")) {
                     return false;
@@ -331,19 +455,30 @@ public class MainActivity extends Activity {
                 int comma = dataUrl.indexOf(',');
                 if (comma < 0) return false;
                 String meta = dataUrl.substring(5, comma);
-                String mime = meta.split(";")[0];
+                String[] metaParts = meta.split(";");
+                String mime = metaParts.length > 0 ? metaParts[0] : "";
+                boolean isBase64 = false;
+                for (int i = 1; i < metaParts.length; i++) {
+                    if ("base64".equalsIgnoreCase(metaParts[i].trim())) {
+                        isBase64 = true;
+                        break;
+                    }
+                }
+                if (!isBase64) return false;
                 if (mime.isEmpty()) mime = "image/png";
                 String ext = mime.contains("jpeg") || mime.contains("jpg") ? ".jpg"
                         : mime.contains("webp") ? ".webp" : ".png";
                 String safeName = (fileName == null || fileName.trim().isEmpty())
                         ? ("TimeLight-" + System.currentTimeMillis() + ext)
                         : fileName.replaceAll("[^a-zA-Z0-9._\\-\\u4e00-\\u9fa5]", "_");
+                if (".".equals(safeName) || "..".equals(safeName)) {
+                    safeName = "TimeLight-" + System.currentTimeMillis() + ext;
+                }
                 if (!safeName.contains(".")) safeName += ext;
 
                 byte[] bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT);
                 long nowMs = System.currentTimeMillis();
                 long nowSec = nowMs / 1000L;
-                boolean saved;
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentResolver resolver = getContentResolver();
                     ContentValues values = new ContentValues();
@@ -354,32 +489,41 @@ public class MainActivity extends Activity {
                     values.put(MediaStore.Images.Media.DATE_MODIFIED, nowSec);
                     values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/TimeLight");
                     values.put(MediaStore.Images.Media.IS_PENDING, 1);
-                    Uri uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-                    if (uri == null) return false;
-                    try (OutputStream out = resolver.openOutputStream(uri)) {
-                        if (out == null) return false;
+                    insertedUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                    if (insertedUri == null) {
+                        throw new java.io.IOException("MediaStore insert returned null");
+                    }
+                    try (OutputStream out = resolver.openOutputStream(insertedUri)) {
+                        if (out == null) {
+                            throw new java.io.IOException("openOutputStream returned null");
+                        }
                         out.write(bytes);
                     }
                     values.clear();
                     values.put(MediaStore.Images.Media.IS_PENDING, 0);
-                    resolver.update(uri, values, null, null);
-                    resolver.notifyChange(uri, null);
-                    saved = true;
+                    resolver.update(insertedUri, values, null, null);
+                    resolver.notifyChange(insertedUri, null);
                 } else {
                     File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "TimeLight");
-                    if (!dir.exists()) dir.mkdirs();
+                    if (!dir.exists() && !dir.mkdirs()) {
+                        throw new java.io.IOException("Failed to create TimeLight directory");
+                    }
                     File outFile = new File(dir, safeName);
                     try (FileOutputStream fos = new FileOutputStream(outFile)) {
                         fos.write(bytes);
                     }
                     MediaScannerConnection.scanFile(MainActivity.this, new String[]{outFile.getAbsolutePath()}, new String[]{mime}, null);
-                    saved = true;
                 }
-                if (saved && !silent) {
+                if (!silent) {
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, "已保存到系统相册", Toast.LENGTH_SHORT).show());
                 }
-                return saved;
+                return true;
             } catch (Exception e) {
+                if (insertedUri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try {
+                        getContentResolver().delete(insertedUri, null, null);
+                    } catch (Exception ignored) {}
+                }
                 if (!silent) {
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, "保存失败，请检查存储权限", Toast.LENGTH_SHORT).show());
                 }

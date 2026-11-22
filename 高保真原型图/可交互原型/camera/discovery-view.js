@@ -5,6 +5,9 @@ window.CameraDiscovery = (() => {
   let runner;
   let cloud;
   let generation = 0;
+  let pageCleanup;
+
+  const recentCloudPayload = new Map();
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -22,8 +25,9 @@ window.CameraDiscovery = (() => {
 
   function leave() {
     generation++;
-    runner?.cancel();
-    runner = undefined;
+    pageCleanup?.();
+    pageCleanup = undefined;
+    runner?.cancel?.();
     cloud?.abort();
     cloud = undefined;
   }
@@ -59,6 +63,13 @@ window.CameraDiscovery = (() => {
     let loadingPhoto = false;
     let prepared;
     let result;
+    let baseResult;
+    let baseMask;
+    let keepMask;
+    let eraseMask;
+    let strokeHistory = [];
+    let brushMode = "keep";
+    let dirtyMatte = false;
     let composition;
     let draft;
     let saving;
@@ -67,6 +78,8 @@ window.CameraDiscovery = (() => {
     let brushSize = 26;
     let operation = 0;
     let selectedLabel;
+    let baselineLabel;
+    let refinePending = false;
 
     const stage = node("div", "discovery-stage");
     const photoFrame = node("div", "extract-photo");
@@ -82,7 +95,7 @@ window.CameraDiscovery = (() => {
     stickerPreview.hidden = true;
     peelWrap.append(stickerPreview);
 
-    const hint = paragraph("涂抹想提取的物体，松手即从原处精准撕下。", "extract-hint");
+    const hint = paragraph("绿色涂抹保留添回，红色涂抹智能擦除，松手实时更新轮廓。", "extract-hint");
     hint.hidden = true;
     photoFrame.append(display, peelWrap, hint);
     stage.append(photoFrame);
@@ -91,12 +104,32 @@ window.CameraDiscovery = (() => {
     tray.setAttribute("aria-label", "贴纸操作栏");
     const message = status(tray);
 
+    const refineBar = node("div", "extract-refine-bar");
+    refineBar.setAttribute("role", "group");
+    refineBar.setAttribute("aria-label", "二次精修笔刷");
+    refineBar.hidden = true;
+    function modeButton(mode, label) {
+      const btn = button("", () => {
+        brushMode = mode;
+        updateEditControls();
+      });
+      const dot = node("span", `extract-dot ${mode}`);
+      dot.setAttribute("aria-hidden", "true");
+      btn.append(dot, label);
+      return btn;
+    }
+    const keepBtn = modeButton("keep", "保留 +");
+    const eraseBtn = modeButton("erase", "擦除 -");
+    const undoBtn = button("撤销", () => void undoStroke());
+    const resetBtn = button("重置", () => void resetStrokes());
+    refineBar.append(keepBtn, eraseBtn, undoBtn, resetBtn);
+
     const brushBar = node("label", "extract-brush-bar");
     brushBar.hidden = true;
     const brushRange = node("input");
     brushRange.type = "range";
-    brushRange.min = "12";
-    brushRange.max = "52";
+    brushRange.min = "10";
+    brushRange.max = "56";
     brushRange.value = String(brushSize);
     brushRange.setAttribute("aria-label", "笔刷粗细");
     brushRange.addEventListener("input", () => { brushSize = Number(brushRange.value) || 26; });
@@ -108,35 +141,79 @@ window.CameraDiscovery = (() => {
     choices.setAttribute("role", "group");
     choices.setAttribute("aria-label", "选择主体");
     tools.append(choices, controls);
-    tray.append(tools, brushBar);
+    tray.append(tools, refineBar, brushBar);
     ctx.content.append(stage, tray);
 
-    const crop = button("涂抹选区", () => {
-      selecting = !selecting;
+    function syncChoiceButtons(activeLabel) {
+      for (const option of choices.children) {
+        option.setAttribute("aria-pressed", String(Number(option.dataset.label) === activeLabel));
+      }
+    }
+
+    function updateEditControls() {
+      keepBtn.setAttribute("aria-pressed", String(brushMode === "keep"));
+      eraseBtn.setAttribute("aria-pressed", String(brushMode === "erase"));
+      const hasEdits = strokeHistory.length > 0;
+      const canEdit = Boolean(result && baseMask) && !refinePending;
+      keepBtn.disabled = eraseBtn.disabled = !canEdit;
+      undoBtn.disabled = !canEdit || !hasEdits;
+      resetBtn.disabled = !canEdit || !hasEdits;
+      brushRange.disabled = refinePending;
+      hint.textContent = !canEdit
+        ? (refinePending ? "正在按涂抹区域智能吸附边缘…" : "涂抹想要提取的物体，松手即可识别主体轮廓。")
+        : brushMode === "keep"
+          ? "绿色涂抹添回遗漏部位，点「擦除 -」可清除多余背景。"
+          : "红色涂抹清除多余区域，松手即按边缘自动吸附。";
+    }
+
+    async function commitSelectionMode(nextSelecting) {
+      selecting = nextSelecting;
+      crop.textContent = selecting ? "完成调整" : "涂抹选区";
       crop.setAttribute("aria-pressed", String(selecting));
-      hint.hidden = !selecting;
-      brushBar.hidden = !selecting;
+      refineBar.hidden = brushBar.hidden = hint.hidden = !selecting;
+      choices.inert = selecting;
+      updateEditControls();
       if (selecting) {
         peelWrap.hidden = stickerPreview.hidden = true;
-        paint(prepared?.image);
-      } else {
-        if (composition) {
-          paintRecessedBase();
-          peelWrap.hidden = stickerPreview.hidden = false;
-        } else {
-          paint(prepared?.image);
-        }
+        if (result && selectedLabel) CameraCutout.renderSelectionContour(prepared.image, result, selectedLabel, display);
+        else paint(prepared?.image);
+        return;
       }
-    });
+      if (dirtyMatte && result && selectedLabel) {
+        await select(selectedLabel);
+      } else if (composition) {
+        paintRecessedBase();
+        peelWrap.hidden = stickerPreview.hidden = false;
+      } else {
+        paint(prepared?.image);
+      }
+    }
+
+    const crop = button("涂抹选区", () => void commitSelectionMode(!selecting));
     crop.setAttribute("aria-pressed", "false");
     const retry = button("重新提取", () => {
+      selecting = false;
+      choices.inert = false;
+      crop.textContent = "涂抹选区";
+      crop.setAttribute("aria-pressed", "false");
+      refineBar.hidden = brushBar.hidden = hint.hidden = true;
       if (prepared) void infer(prepared.region);
       else void prepareAndInfer();
     });
     controls.append(crop, retry);
 
-    const save = button("保存贴纸", () => void saveDraft());
+    const save = button("保存贴纸", async () => {
+      if (selecting || dirtyMatte) {
+        await commitSelectionMode(false);
+        if (!ctx.alive() || selecting || dirtyMatte) return;
+      }
+      await saveDraft();
+    });
     const identify = button("识别入图鉴", async () => {
+      if (selecting || dirtyMatte) {
+        await commitSelectionMode(false);
+        if (!ctx.alive() || selecting || dirtyMatte) return;
+      }
       const sticker = await saveDraft();
       if (sticker && ctx.alive()) showIdentification(sticker, ctx);
     });
@@ -150,7 +227,8 @@ window.CameraDiscovery = (() => {
       identify.disabled = value || !draft;
       retry.disabled = value;
       crop.disabled = value || !prepared;
-      choices.inert = value;
+      choices.inert = value || selecting;
+      if (!value) updateEditControls();
     }
 
     function paint(source = prepared?.image) {
@@ -182,16 +260,23 @@ window.CameraDiscovery = (() => {
     }
 
     function drawBrushOverlay(points) {
-      paint(prepared.image);
+      if (result && selectedLabel) {
+        CameraCutout.renderSelectionContour(prepared.image, result, selectedLabel, display);
+      } else {
+        paint(prepared.image);
+      }
       const context = display.getContext("2d");
       const scaleFactor = display.width / Math.max(240, display.getBoundingClientRect().width || display.width);
+      const color = !result
+        ? "rgba(255, 245, 214, 0.72)"
+        : brushMode === "keep" ? "rgba(72, 214, 132, 0.58)" : "rgba(240, 96, 88, 0.58)";
       context.save();
       context.lineCap = "round";
       context.lineJoin = "round";
-      context.strokeStyle = "rgba(255, 245, 214, 0.72)";
-      context.fillStyle = "rgba(255, 245, 214, 0.72)";
-      context.shadowColor = "rgba(42, 32, 20, 0.55)";
-      context.shadowBlur = 8;
+      context.strokeStyle = color;
+      context.fillStyle = color;
+      context.shadowColor = "rgba(18, 14, 10, 0.45)";
+      context.shadowBlur = 4;
       const lineW = Math.max(10, brushSize * scaleFactor);
       context.lineWidth = lineW;
       if (points.length === 1) {
@@ -209,25 +294,27 @@ window.CameraDiscovery = (() => {
       context.restore();
     }
 
-    function rasterizeBrush(points) {
+    function rasterizeBrush(points, region = { x: 0, y: 0, width: 1, height: 1 }) {
       const maskCanvas = document.createElement("canvas");
       maskCanvas.width = maskCanvas.height = 320;
       const mCtx = maskCanvas.getContext("2d");
       const rectWidth = Math.max(240, display.getBoundingClientRect().width || 320);
-      const radiusPx = Math.max(8, (brushSize / rectWidth) * 320 * 0.65);
+      const radiusPx = Math.max(6, (brushSize / rectWidth) * (320 / region.width) * 0.55);
       mCtx.lineCap = "round";
       mCtx.lineJoin = "round";
       mCtx.strokeStyle = "#ffffff";
       mCtx.fillStyle = "#ffffff";
       mCtx.lineWidth = radiusPx * 2;
+      const toX = px => ((px - region.x) / region.width) * 320;
+      const toY = py => ((py - region.y) / region.height) * 320;
       if (points.length === 1) {
         mCtx.beginPath();
-        mCtx.arc(points[0].x * 320, points[0].y * 320, radiusPx, 0, Math.PI * 2);
+        mCtx.arc(toX(points[0].x), toY(points[0].y), radiusPx, 0, Math.PI * 2);
         mCtx.fill();
       } else {
         mCtx.beginPath();
-        mCtx.moveTo(points[0].x * 320, points[0].y * 320);
-        for (let i = 1; i < points.length; i++) mCtx.lineTo(points[i].x * 320, points[i].y * 320);
+        mCtx.moveTo(toX(points[0].x), toY(points[0].y));
+        for (let i = 1; i < points.length; i++) mCtx.lineTo(toX(points[i].x), toY(points[i].y));
         mCtx.stroke();
       }
       const data = mCtx.getImageData(0, 0, 320, 320).data;
@@ -236,41 +323,127 @@ window.CameraDiscovery = (() => {
       return out;
     }
 
-    function select(label) {
-      composition = CameraCutout.compose(prepared.image, result, label);
-      selectedLabel = label;
-      draft = { id: crypto.randomUUID(), saved: false };
-      save.textContent = "保存贴纸";
-      paintRecessedBase();
+    function initRefineState(initialResult, label) {
+      baseResult = initialResult;
+      baselineLabel = label;
+      baseMask = CameraCutout.extractBaseMask(initialResult, label);
+      keepMask = new Uint8Array(320 * 320);
+      eraseMask = new Uint8Array(320 * 320);
+      strokeHistory = [];
+      dirtyMatte = false;
+      updateEditControls();
+    }
 
-      peelWrap.style.left = `${composition.bounds.x * 100}%`;
-      peelWrap.style.top = `${composition.bounds.y * 100}%`;
-      peelWrap.style.width = `${composition.bounds.width * 100}%`;
-      peelWrap.style.height = `${composition.bounds.height * 100}%`;
-      stickerPreview.width = composition.sticker.width;
-      stickerPreview.height = composition.sticker.height;
-      stickerPreview.getContext("2d").drawImage(composition.sticker, 0, 0);
-      peelWrap.hidden = false;
-      stickerPreview.hidden = false;
-
-      peelWrap.getAnimations().forEach(animation => animation.cancel());
-      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        peelWrap.animate([
-          { opacity: 0.92, transform: "perspective(650px) translate3d(0, 0, 0) rotateX(0deg) rotateY(0deg) rotateZ(0deg) scale(1)" },
-          { opacity: 1, transform: "perspective(650px) translate3d(5px, -11px, 28px) rotateX(13deg) rotateY(-12deg) rotateZ(-3deg) scale(1.05)" },
-          { opacity: 1, transform: "perspective(650px) translate3d(3px, -6px, 16px) rotateX(6deg) rotateY(-7deg) rotateZ(-2deg) scale(1.03)" }
-        ], { duration: 480, easing: "cubic-bezier(.18,.85,.28,1)" });
+    async function applyRefineMask() {
+      if (!result || !baseMask) return;
+      const ticket = ++operation;
+      refinePending = true;
+      updateEditControls();
+      busy(true);
+      try {
+        const refined = await runner.refine(prepared.image, result.region, result.sceneKey, baseMask, keepMask, eraseMask);
+        if (!ctx.alive() || ticket !== operation) return;
+        result = refined;
+        selectedLabel = 1;
+        dirtyMatte = true;
+        CameraCutout.renderSelectionContour(prepared.image, result, 1, display);
+        message.textContent = "已按涂抹边缘更新轮廓 · 可继续调整或点「完成调整」";
+      } catch (error) {
+        if (ctx.alive() && ticket === operation && error.name !== "AbortError") {
+          message.textContent = error.message;
+          if (result && selectedLabel) CameraCutout.renderSelectionContour(prepared.image, result, selectedLabel, display);
+        }
+      } finally {
+        if (ticket === operation) refinePending = false;
+        if (ctx.alive() && ticket === operation) busy(false);
       }
-      message.textContent = "已从原处撕下贴纸 · 点「识别入图鉴」由 AI 自动生成标签";
-      for (const option of choices.children) option.setAttribute("aria-pressed", String(Number(option.dataset.label) === label));
-      busy(false);
+    }
+
+    async function undoStroke() {
+      if (!strokeHistory.length || refinePending) return;
+      const prev = strokeHistory.pop();
+      keepMask = prev.keep;
+      eraseMask = prev.erase;
+      if (!strokeHistory.length) {
+        ++operation;
+        runner?.abortPending?.();
+        result = baseResult;
+        selectedLabel = baselineLabel || baseResult.choices[0].label;
+        dirtyMatte = true;
+        syncChoiceButtons(selectedLabel);
+        CameraCutout.renderSelectionContour(prepared.image, result, selectedLabel, display);
+        updateEditControls();
+        message.textContent = "已恢复至上一笔轮廓。";
+        return;
+      }
+      await applyRefineMask();
+    }
+
+    async function resetStrokes() {
+      if (!baseResult || refinePending) return;
+      ++operation;
+      runner?.abortPending?.();
+      const restoredLabel = baselineLabel ?? baseResult.choices[0].label;
+      result = baseResult;
+      selectedLabel = restoredLabel;
+      initRefineState(baseResult, restoredLabel);
+      dirtyMatte = true;
+      syncChoiceButtons(restoredLabel);
+      CameraCutout.renderSelectionContour(prepared.image, result, restoredLabel, display);
+      message.textContent = "已重置涂抹，恢复初始识别轮廓。";
+    }
+
+    async function select(label, resetBaseline = false) {
+      const ticket = ++operation;
+      busy(true);
+      try {
+        const sourceResult = resetBaseline && baseResult ? baseResult : result;
+        if (resetBaseline && sourceResult) initRefineState(sourceResult, label);
+        const nextComp = await CameraCutout.composeAsync(runner, prepared.image, sourceResult, label);
+        if (!ctx.alive() || ticket !== operation) return;
+        result = sourceResult;
+        dirtyMatte = false;
+        composition = nextComp;
+        selectedLabel = label;
+        draft = { id: crypto.randomUUID(), saved: false };
+        save.textContent = "保存贴纸";
+        paintRecessedBase();
+
+        peelWrap.style.left = `${composition.bounds.x * 100}%`;
+        peelWrap.style.top = `${composition.bounds.y * 100}%`;
+        peelWrap.style.width = `${composition.bounds.width * 100}%`;
+        peelWrap.style.height = `${composition.bounds.height * 100}%`;
+        stickerPreview.width = composition.sticker.width;
+        stickerPreview.height = composition.sticker.height;
+        stickerPreview.getContext("2d").drawImage(composition.sticker, 0, 0);
+        peelWrap.hidden = false;
+        stickerPreview.hidden = false;
+
+        peelWrap.getAnimations().forEach(animation => animation.cancel());
+        if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          peelWrap.animate([
+            { opacity: 0.92, transform: "perspective(650px) translate3d(0, 0, 0) rotateX(0deg) rotateY(0deg) rotateZ(0deg) scale(1)" },
+            { opacity: 1, transform: "perspective(650px) translate3d(5px, -11px, 28px) rotateX(13deg) rotateY(-12deg) rotateZ(-3deg) scale(1.05)" },
+            { opacity: 1, transform: "perspective(650px) translate3d(3px, -6px, 16px) rotateX(6deg) rotateY(-7deg) rotateZ(-2deg) scale(1.03)" }
+          ], { duration: 480, easing: "cubic-bezier(.18,.85,.28,1)" });
+        }
+        message.textContent = "已从原处撕下贴纸 · 点「涂抹选区」可精修轮廓";
+        syncChoiceButtons(label);
+      } catch (error) {
+        if (ctx.alive() && ticket === operation && error.name !== "AbortError") message.textContent = error.message;
+      } finally {
+        if (ctx.alive() && ticket === operation) busy(false);
+      }
     }
 
     async function infer(region, brushMask = null) {
       if (!prepared) return;
       const request = ++operation;
       runner ||= CameraCutout.runner();
-      draft = composition = result = undefined;
+      draft = composition = result = baseResult = baseMask = undefined;
+      keepMask = eraseMask = undefined;
+      strokeHistory = [];
+      dirtyMatte = false;
       choices.replaceChildren();
       peelWrap.hidden = stickerPreview.hidden = true;
       paint(prepared.image);
@@ -286,11 +459,11 @@ window.CameraDiscovery = (() => {
         if (!ctx.alive() || request !== operation) return;
         result = next;
         if (result.choices.length > 1) result.choices.forEach((item, index) => {
-          const option = button(`主体 ${index + 1}`, () => select(item.label));
+          const option = button(`主体 ${index + 1}`, () => void select(item.label, true));
           option.dataset.label = item.label;
           choices.append(option);
         });
-        select(result.choices[0].label);
+        await select(result.choices[0].label, true);
       } catch (error) {
         if (ctx.alive() && request === operation && error.name !== "AbortError") message.textContent = error.message;
       } finally {
@@ -325,9 +498,16 @@ window.CameraDiscovery = (() => {
       busy(true);
       saving = (async () => {
         try {
+          const cloudData = {
+            subjectImage: CameraCutout.cloudImage(image.sticker, 768),
+            contextImage: CameraCutout.cloudImage(image.full, 768)
+          };
           const [blob, composite, mask, thumbnail, compositeThumbnail] = await Promise.all([
-            CameraPhoto.encode(image.sticker, "image/png"), CameraPhoto.encode(image.full, "image/png"),
-            CameraPhoto.encode(image.alpha, "image/png"), CameraCutout.thumbnail(image.sticker), CameraPhoto.makeThumbnail(image.full)
+            CameraPhoto.encode(image.sticker, "image/png"),
+            CameraPhoto.encode(image.full, "image/jpeg", 0.88),
+            CameraCutout.compactMask(image.alpha, 480),
+            CameraCutout.thumbnail(image.sticker),
+            CameraPhoto.makeThumbnail(image.full)
           ]);
           const sticker = {
             id: current.id,
@@ -343,6 +523,10 @@ window.CameraDiscovery = (() => {
             bounds: image.bounds, width: image.full.width, height: image.full.height
           };
           await CameraAlbum.saveSticker(sticker);
+          recentCloudPayload.set(sticker.id, cloudData);
+          if (recentCloudPayload.size > 4) {
+            recentCloudPayload.delete(recentCloudPayload.keys().next().value);
+          }
           current.saved = sticker;
           if (ctx.alive() && current === draft) {
             save.textContent = "已保存贴纸";
@@ -366,32 +550,55 @@ window.CameraDiscovery = (() => {
       if (!prepared || crop.disabled || event.button !== 0) return;
       const start = point(event);
       if (selecting) {
-        brushStroke = [start];
-        display.setPointerCapture(event.pointerId);
-        drawBrushOverlay(brushStroke);
+        if (brushStroke) return;
+        brushStroke = { pointerId: event.pointerId, points: [start] };
+        try { display.setPointerCapture(event.pointerId); } catch {}
+        drawBrushOverlay(brushStroke.points);
         return;
       }
       if (!result) return;
       const x = Math.floor((start.x - result.region.x) / result.region.width * 320);
       const y = Math.floor((start.y - result.region.y) / result.region.height * 320);
       const label = x >= 0 && y >= 0 && x < 320 && y < 320 ? result.labels[y * 320 + x] : 0;
-      if (result.choices.some(item => item.label === label) && label !== selectedLabel) select(label);
+      if (result.choices.some(item => item.label === label) && label !== selectedLabel) void select(label, true);
     });
 
     display.addEventListener("pointermove", event => {
-      if (!brushStroke) return;
+      if (!brushStroke || event.pointerId !== brushStroke.pointerId) return;
       const pt = point(event);
-      const last = brushStroke[brushStroke.length - 1];
+      const pts = brushStroke.points;
+      const last = pts[pts.length - 1];
       if (!last || Math.hypot(pt.x - last.x, pt.y - last.y) >= 0.008) {
-        brushStroke.push(pt);
-        drawBrushOverlay(brushStroke);
+        pts.push(pt);
+        drawBrushOverlay(pts);
       }
     });
 
     function finishBrush(event) {
-      if (!brushStroke) return;
-      const points = brushStroke;
+      if (!brushStroke || (event.pointerId !== undefined && event.pointerId !== brushStroke.pointerId)) return;
+      const points = brushStroke.points;
       brushStroke = null;
+      if (event.type === "pointercancel" || event.type === "lostpointercapture") {
+        if (result && selectedLabel) CameraCutout.renderSelectionContour(prepared.image, result, selectedLabel, display);
+        else paint(prepared?.image);
+        return;
+      }
+      if (result && baseMask) {
+        const stroke = rasterizeBrush(points, result.region);
+        strokeHistory.push({ keep: new Uint8Array(keepMask), erase: new Uint8Array(eraseMask) });
+        const target = brushMode === "keep" ? keepMask : eraseMask;
+        const counter = brushMode === "keep" ? eraseMask : keepMask;
+        for (let i = 0; i < stroke.length; i++) {
+          if (stroke[i] >= 128) {
+            target[i] = Math.max(target[i], stroke[i]);
+            counter[i] = 0;
+          }
+        }
+        updateEditControls();
+        void applyRefineMask();
+        return;
+      }
+
       const bounds = prepared.region;
       const rectWidth = Math.max(240, display.getBoundingClientRect().width || 320);
       const padNorm = Math.max(0.035, (brushSize / rectWidth) * 1.4);
@@ -400,32 +607,32 @@ window.CameraDiscovery = (() => {
         minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
         minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
       }
-      const x = Math.max(bounds.x, minX - padNorm);
-      const y = Math.max(bounds.y, minY - padNorm);
-      const maxRight = Math.min(bounds.x + bounds.width, maxX + padNorm);
-      const maxBottom = Math.min(bounds.y + bounds.height, maxY + padNorm);
+      const boxW = Math.max(0.02, maxX - minX);
+      const boxH = Math.max(0.02, maxY - minY);
+      const padX = Math.max(0.14, boxW * 0.45, padNorm * 1.5);
+      const padY = Math.max(0.14, boxH * 0.45, padNorm * 1.5);
+      const x = Math.max(bounds.x, minX - padX);
+      const y = Math.max(bounds.y, minY - padY);
+      const maxRight = Math.min(bounds.x + bounds.width, maxX + padX);
+      const maxBottom = Math.min(bounds.y + bounds.height, maxY + padY);
       const width = maxRight - x;
       const height = maxBottom - y;
-      if (event.type === "pointercancel" || width < .035 || height < .035) {
-        if (composition) {
-          paintRecessedBase();
-          peelWrap.hidden = stickerPreview.hidden = false;
-        } else {
-          paint(prepared?.image);
-        }
-        if (event.type !== "pointercancel") message.textContent = "请涂抹稍大一些的物体范围。";
+      if (Math.hypot(maxX - minX, maxY - minY) < 0.02 || width < .035 || height < .035) {
+        paint(prepared?.image);
+        message.textContent = "请涂抹稍大一些的物体范围。";
         return;
       }
       const brushMask = rasterizeBrush(points);
       selecting = false;
-      hint.hidden = true;
-      brushBar.hidden = true;
+      refineBar.hidden = brushBar.hidden = hint.hidden = true;
+      crop.textContent = "涂抹选区";
       crop.setAttribute("aria-pressed", "false");
       void infer({ x, y, width, height }, brushMask);
     }
 
     display.addEventListener("pointerup", finishBrush);
     display.addEventListener("pointercancel", finishBrush);
+    display.addEventListener("lostpointercapture", finishBrush);
     void prepareAndInfer();
   }
 
@@ -436,7 +643,10 @@ window.CameraDiscovery = (() => {
     frame(ctx, entry ? "编辑观察" : "识别入图鉴", () => ctx.navigate(`#album/sticker/${encodeURIComponent(sticker.id)}`));
     const { categoryToPurpose } = await import("/camera/prop-types.mjs").catch(() => ({ categoryToPurpose: {} }));
     if (!alive()) return;
-    const preview = img(ctx, sticker.composite, "完整照片上的主体贴纸", "discovery-form-photo");
+    const previewBlob = sticker.composite || sticker.blob;
+    const preview = previewBlob
+      ? img(ctx, previewBlob, sticker.composite ? "完整照片上的主体贴纸" : "透明背景的实拍贴纸", "discovery-form-photo")
+      : node("div", "discovery-form-photo");
     const form = node("form", "discovery-form");
     const name = node("input");
     name.required = true;
@@ -498,11 +708,15 @@ window.CameraDiscovery = (() => {
       identify.disabled = submit.disabled = true;
       message.textContent = "正在云端识别主体与生成标签…";
       try {
-        const [subject, context] = await Promise.all([CameraPhoto.load(sticker.blob), CameraPhoto.load(sticker.composite)]);
-        if (!alive() || controller.signal.aborted) return;
+        let payload = recentCloudPayload.get(sticker.id);
+        if (!payload) {
+          const [subject, context] = await Promise.all([CameraPhoto.load(sticker.blob), CameraPhoto.load(sticker.composite)]);
+          if (!alive() || controller.signal.aborted) return;
+          payload = { subjectImage: CameraCutout.cloudImage(subject, 768), contextImage: CameraCutout.cloudImage(context, 768) };
+        }
         const response = await fetch("/api/identify-object", {
           method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subjectImage: CameraCutout.cloudImage(subject, 768), contextImage: CameraCutout.cloudImage(context, 768) })
+          body: JSON.stringify(payload)
         });
         const result = await response.json().catch(() => ({ error: "识别服务暂时无法使用，请重试。" }));
         if (!alive() || controller.signal.aborted) return;
@@ -510,6 +724,7 @@ window.CameraDiscovery = (() => {
         if (typeof result.name !== "string" || !categories.includes(result.category) || typeof result.observation !== "string") throw new Error("识别结果不完整，请重试。");
         name.value = result.name;
         category.value = result.category;
+        category.dispatchEvent(new Event("change"));
         observation.value = result.observation;
         aiTags = Array.isArray(result.tags) && result.tags.length
           ? result.tags
@@ -535,8 +750,11 @@ window.CameraDiscovery = (() => {
         if (!alive()) return;
         if (result.conflict) {
           await comparison(result.conflict);
-        } else {
+        } else if (entry) {
           ctx.navigate(`#album/entry/${encodeURIComponent(result.entry.key)}`);
+          ctx.notice("已更新观察。");
+        } else {
+          ctx.navigate("#album");
           ctx.notice("已收入图鉴。");
         }
       } catch (error) { if (alive()) message.textContent = error.message || "收录失败，请重试。"; }
@@ -557,7 +775,10 @@ window.CameraDiscovery = (() => {
         pair.append(figure);
       }
       const update = button("更新图鉴", () => void collect(true, previous.stickerId));
-      const keep = button("保留当前", () => ctx.navigate(`#album/entry/${encodeURIComponent(previous.key)}`));
+      const keep = button("保留当前", () => {
+        ctx.navigate(entry ? `#album/entry/${encodeURIComponent(previous.key)}` : "#album");
+        ctx.notice(entry ? "已保留当前图鉴。" : "贴纸已保存，已返回相册。");
+      });
       panel.append(pair, paragraph("两张贴纸都已保存在收藏里。"), keep, update);
       form.hidden = preview.hidden = true;
       ctx.content.querySelector(".discovery-comparison")?.remove();
@@ -598,8 +819,20 @@ window.CameraDiscovery = (() => {
     if (!ctx.alive()) return;
     let page = 0;
     let render = 0;
+    const pageUrls = [];
+    const clearPageUrls = () => {
+      while (pageUrls.length) URL.revokeObjectURL(pageUrls.pop());
+    };
+    pageCleanup = clearPageUrls;
+    function pageUrlFor(blob) {
+      if (!(blob instanceof Blob)) return "";
+      const url = URL.createObjectURL(blob);
+      pageUrls.push(url);
+      return url;
+    }
     async function draw() {
       const request = ++render;
+      clearPageUrls();
       const filtered = items.filter(item => !category.value || item.category === category.value);
       const pages = Math.max(1, Math.ceil(filtered.length / 12));
       page = Math.min(page, pages - 1);
@@ -620,8 +853,8 @@ window.CameraDiscovery = (() => {
         if (isEntry) {
           const sticker = await CameraAlbum.getSticker(item.stickerId);
           if (!ctx.alive() || request !== render) return;
-          if (sticker) image.src = ctx.urlFor(sticker.compositeThumbnail || sticker.composite);
-        } else image.src = ctx.urlFor(item.thumbnail);
+          if (sticker) image.src = pageUrlFor(sticker.compositeThumbnail || sticker.composite || sticker.blob);
+        } else image.src = pageUrlFor(item.thumbnail || item.blob);
       }
       const previous = button("上一页", () => { page--; void draw(); });
       const next = button("下一页", () => { page++; void draw(); });
@@ -668,8 +901,9 @@ window.CameraDiscovery = (() => {
     });
     const actions = node("div", "discovery-actions");
     if (sticker.photoId) actions.append(source);
-    if (isEntry) actions.append(button("编辑观察", () => showIdentification(sticker, ctx, entry)));
-    else {
+    if (isEntry) {
+      if (sticker.composite) actions.append(button("编辑观察", () => showIdentification(sticker, ctx, entry)));
+    } else {
       if (sticker.composite && sticker.photoId) actions.append(button("识别入图鉴", () => showIdentification(sticker, ctx)));
       const download = node("a", "gallery-pill", "导出贴纸");
       download.href = ctx.urlFor(sticker.blob);
