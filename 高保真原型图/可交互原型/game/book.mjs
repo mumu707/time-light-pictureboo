@@ -6,6 +6,13 @@ import { starterProps, prizeFor, propImage, chapterThumbnail, playEcology } from
 import { activityEmotion, displayedEmotion, express, reactionEmotion } from "./spirit-emotions.mjs";
 import { primaryTrait, selectDialogueLine, buildChatFlow, pickCompanionExchange, createAmbientScheduler } from "./spirit-dialogue.mjs";
 import { PAPER_MODELS, FURNITURE_GROUPS, SCENE_LANDMARKS_VERSION, createDefaultSceneModels, ensureChapterLandmarks, getModelPreviewAsset } from "./paper-models.mjs";
+import {
+  SNACK_CATALOG, HAT_CATALOG, EXPEDITION_TIERS,
+  ensureProgression, isFurnitureUnlocked, getFurnitureMeta, buyFurniture, pullBlindBox, buySnack,
+  getSpiritCare, spiritLevelInfo, feedSpirit, petSpirit, startExpedition, claimExpedition, equipHat,
+  getCollectionBonus, pendingIdleCoins, claimIdleCoins
+} from "./progression.mjs";
+import { openArcadeHub, chapterMinigames } from "./minigames/hub.mjs";
 
 const el = id => document.getElementById(id);
 const shell = document.querySelector(".book-shell");
@@ -122,6 +129,62 @@ try {
   book = loadBook({ getItem: () => null }).book;
   storageWarning = "之前的书本无法读取";
 }
+ensureProgression(book);
+
+const walletBar = el("wallet-bar");
+const walletCoinsEl = el("wallet-coins");
+const walletStarsEl = el("wallet-stars");
+const claimIdleBtn = el("claim-idle-btn");
+
+function updateWalletHud() {
+  const prog = ensureProgression(book);
+  if (walletBar) walletBar.hidden = !open;
+  if (walletCoinsEl) walletCoinsEl.textContent = `🪙 ${prog.coins}`;
+  if (walletStarsEl) walletStarsEl.textContent = `⭐ ${prog.stars}`;
+  const idle = pendingIdleCoins(book);
+  if (claimIdleBtn) {
+    claimIdleBtn.hidden = idle <= 0;
+    claimIdleBtn.textContent = `领 +🪙${idle}`;
+  }
+}
+claimIdleBtn?.addEventListener("click", () => {
+  const got = claimIdleCoins(book);
+  if (got > 0) {
+    persist();
+    updateWalletHud();
+    if (status) status.textContent = `已领取精灵挂机攒下的 ${got} 枚拾光币！`;
+  }
+});
+setInterval(() => { if (open && !document.hidden) updateWalletHud(); }, 30000);
+
+function placePaperModel(modelId) {
+  const spec = PAPER_MODELS[modelId];
+  if (!spec) return null;
+  const asset = getModelPreviewAsset(modelId, spec.name, spec.color);
+  const spot = floorRecord({ x: center.x + (Math.random() - .5) * 1.4, y: center.y + 1.0 + (Math.random() - .5) * 1.0 });
+  const record = {
+    id: uid(),
+    modelId,
+    name: spec.name,
+    category: spec.category,
+    purpose: spec.purpose,
+    color: spec.color,
+    surface: "paper",
+    x: clamp(spot.x, .12, .88),
+    y: clamp(spot.y, .12, .88),
+    scale: .85,
+    rotation: 0,
+    selfRotation: 0,
+    isModel: true
+  };
+  setAsset(record, asset);
+  sceneModels().push(record);
+  const button = actor(record);
+  select(record);
+  changed(record);
+  button.focus({ preventScroll: true });
+  return record;
+}
 function statusLine() {
   status.textContent = [placementWarning, saveFailed ? "保存失败" : storageWarning, missing ? "部分收藏贴纸已找不到" : ""].filter(Boolean).join(" · ");
   el("desk-retry").hidden = !saveFailed;
@@ -165,12 +228,14 @@ function showWorld() {
     shell.style.removeProperty("--halo");
     shell.style.removeProperty("--room");
   }
-  el("play-ecology").hidden = !world().game;
-  el("play-ecology").textContent = world().game || "";
+  const chGames = chapterMinigames(world().id);
+  el("play-ecology").hidden = false;
+  el("play-ecology").textContent = chGames.length ? `🎮 游乐屋 (${chGames[0].name})` : "🎮 游乐屋";
   el("chapter-name").textContent = world().name;
   el("chapter-symbol").textContent = world().symbol;
   scene?.setWorld(world().id);
   hideReaction();
+  updateWalletHud();
 }
 
 async function neighborAsset(id) {
@@ -769,11 +834,13 @@ async function restoreWorld() {
     const slot = spirit.builtin ? nextNeighbor++ : nextGuest++;
     const x = spirit.builtin ? .105 + slot * .075 : .66 + slot % 3 * .11;
     const y = spirit.builtin ? .855 : .38 + Math.floor(slot / 3) % 4 * .17;
-    return [{ ...spirit, asset, fulfilled: book.fulfilled?.[spirit.id], ...expandFloor({ x, y }), ...lifePositions.get(lifeKey(spirit)) }];
+    const care = getSpiritCare(book, spirit);
+    return [{ ...spirit, asset, careAura: Boolean(care.aura), careHat: care.hat, fulfilled: book.fulfilled?.[spirit.id], ...expandFloor({ x, y }), ...lifePositions.get(lifeKey(spirit)) }];
   });
   updateWalkMap();
   rebuildActors();
   renderFurnitureList();
+  updateWalletHud();
   statusLine();
 }
 function setAsset(record, asset) {
@@ -936,16 +1003,27 @@ function openTasks() {
     button.onclick = () => { taskDialog.close(); openSpirit(spirit.id); };
     list.append(button);
   }
-  if (world().game) {
+  const chGames = chapterMinigames(world().id);
+  for (const g of chGames) {
     const button = document.createElement("button");
     button.style.setProperty("--chapter-paper", world().paper);
     const label = document.createElement("div");
-    label.textContent = world().game;
+    label.textContent = `${g.icon} ${g.name}`;
     const detail = document.createElement("small");
-    detail.textContent = book.prizes?.includes(world().id) ? "已领取首通摆件" : `首次通关可获得${world().prize}`;
+    const claimed = ensureProgression(book).minigames.claimedMilestones.includes(g.id);
+    detail.textContent = claimed ? "已领里程碑限定家具" : `${g.milestoneLabel} 可领「${PAPER_MODELS[g.rewardModel]?.name || g.rewardModel}」`;
     label.append(detail);
     button.append(label);
-    button.onclick = () => { taskDialog.close(); playEcology(world(), claimPrize); };
+    button.onclick = () => {
+      taskDialog.close();
+      openArcadeHub({
+        book,
+        currentWorldId: world().id,
+        initialGameId: g.id,
+        onStateChanged: () => { persist(); updateWalletHud(); },
+        onPlaceModel: id => { placePaperModel(id); }
+      });
+    };
     list.append(button);
   }
   if (!list.children.length) list.textContent = "这一页暂时没有心愿。可以唤醒精灵或邀请精灵搬过来。";
@@ -1218,23 +1296,173 @@ async function openLibrary(wake, drawerTab = "stickers", groupFilter = "全部")
   libraryMessage("正在翻找收藏册…");
   const current = () => drawer.open && token === revision;
   try {
-    if (!wake && drawerTab === "models") {
-      library.replaceChildren();
+    const buildDrawerTabs = (activeTab) => {
       const tabs = document.createElement("div");
       tabs.className = "drawer-tabs";
-      const stickerTab = document.createElement("button");
-      stickerTab.type = "button";
-      stickerTab.className = "desk-pill";
-      stickerTab.textContent = "贴纸收藏";
-      stickerTab.setAttribute("aria-pressed", "false");
-      stickerTab.onclick = () => { if (current()) void openLibrary(false, "stickers"); };
-      const modelTab = document.createElement("button");
-      modelTab.type = "button";
-      modelTab.className = "desk-pill";
-      modelTab.textContent = "纸模布景";
-      modelTab.setAttribute("aria-pressed", "true");
-      tabs.append(stickerTab, modelTab);
-      library.append(tabs);
+      const defs = [
+        { id: "stickers", label: "贴纸收藏" },
+        { id: "models", label: "纸模布景" },
+        { id: "shop", label: "家具铺" }
+      ];
+      for (const d of defs) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "desk-pill";
+        btn.textContent = d.label;
+        btn.setAttribute("aria-pressed", String(d.id === activeTab));
+        if (d.id !== activeTab) btn.onclick = () => { if (current()) void openLibrary(false, d.id); };
+        tabs.append(btn);
+      }
+      return tabs;
+    };
+
+    if (!wake && drawerTab === "shop") {
+      const prog = ensureProgression(book);
+      const coll = getCollectionBonus(book);
+      library.replaceChildren(buildDrawerTabs("shop"));
+
+      const banner = document.createElement("div");
+      banner.className = "shop-banner";
+      banner.innerHTML = `
+        <div class="shop-wallet-line">
+          <strong>🪙 ${prog.coins} 拾光币 · ⭐ ${prog.stars} 灵感星</strong>
+          <small>已收集 ${coll.count}/${coll.total} 款（${coll.title} · 挂机+${Math.round(coll.bonus * 100)}%）</small>
+        </div>
+      `;
+      const boxRow = document.createElement("div");
+      boxRow.className = "shop-blindbox-row";
+      const pull1 = document.createElement("button");
+      pull1.type = "button";
+      pull1.className = "desk-pill desk-primary";
+      pull1.textContent = "🎁 折纸盲盒单抽 (🪙150)";
+      const pull5 = document.createElement("button");
+      pull5.type = "button";
+      pull5.className = "desk-pill desk-primary";
+      pull5.textContent = "✨ 五连保底新款 (🪙700)";
+      const pullLog = document.createElement("div");
+      pullLog.className = "shop-pull-log";
+      pullLog.hidden = true;
+
+      const doPull = (cnt) => {
+        const res = pullBlindBox(book, cnt);
+        if (!res.ok) {
+          pullLog.hidden = false;
+          pullLog.textContent = res.reason;
+          return;
+        }
+        persist();
+        updateWalletHud();
+        void openLibrary(false, "shop", groupFilter);
+        const latest = library.querySelector(".shop-pull-log");
+        if (latest) {
+          latest.hidden = false;
+          latest.replaceChildren();
+          const summary = document.createElement("p");
+          summary.textContent = res.results.map(r => r.isNew ? `🎉 新家具「${r.name}」` : `重复「${r.name}」折返 ⭐${r.refundStars}`).join(" · ");
+          latest.append(summary);
+          const firstNew = res.results.find(r => r.isNew);
+          if (firstNew) {
+            const placeBtn = document.createElement("button");
+            placeBtn.type = "button";
+            placeBtn.className = "desk-pill desk-primary";
+            placeBtn.textContent = `立刻摆出「${firstNew.name}」`;
+            placeBtn.onclick = () => { drawer.close(); placePaperModel(firstNew.modelId); };
+            latest.append(placeBtn);
+          }
+        }
+      };
+      pull1.onclick = () => doPull(1);
+      pull5.onclick = () => doPull(5);
+      boxRow.append(pull1, pull5);
+      banner.append(boxRow, pullLog);
+      library.append(banner);
+
+      // Snack shop strip
+      const snackBar = document.createElement("div");
+      snackBar.className = "shop-snacks";
+      const snackHead = document.createElement("small");
+      snackHead.className = "shop-section-label";
+      snackHead.textContent = "🍓 精灵小卖部（点击购买零食）";
+      snackBar.append(snackHead);
+      const snackGrid = document.createElement("div");
+      snackGrid.className = "shop-snack-row";
+      for (const sn of SNACK_CATALOG) {
+        const sBtn = document.createElement("button");
+        sBtn.type = "button";
+        sBtn.className = "desk-pill";
+        const owned = prog.snacks[sn.id] || 0;
+        sBtn.textContent = `${sn.icon} ${sn.name} (${sn.starPrice ? `⭐${sn.starPrice}` : `🪙${sn.price}`}) [${owned}]`;
+        sBtn.onclick = () => {
+          const r = buySnack(book, sn.id);
+          if (r.ok) { persist(); updateWalletHud(); void openLibrary(false, "shop", groupFilter); }
+          else { pullLog.hidden = false; pullLog.textContent = r.reason; }
+        };
+        snackGrid.append(sBtn);
+      }
+      snackBar.append(snackGrid);
+      library.append(snackBar);
+
+      // Furniture filter & buy grid
+      const filters = document.createElement("div");
+      filters.className = "drawer-filters";
+      for (const groupName of FURNITURE_GROUPS.filter(g => g !== "布景")) {
+        const filterBtn = document.createElement("button");
+        filterBtn.type = "button";
+        filterBtn.className = "desk-pill";
+        filterBtn.textContent = groupName;
+        filterBtn.setAttribute("aria-pressed", String(groupName === groupFilter));
+        filterBtn.onclick = () => { if (current()) void openLibrary(false, "shop", groupName); };
+        filters.append(filterBtn);
+      }
+      library.append(filters);
+
+      const orderedShop = Object.entries(PAPER_MODELS)
+        .filter(([, spec]) => spec.batch === 3 && (groupFilter === "全部" || spec.furnGroup === groupFilter));
+      for (const [modelId, spec] of orderedShop) {
+        const owned = isFurnitureUnlocked(book, modelId);
+        const meta = getFurnitureMeta(modelId);
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "desk-card";
+        card.dataset.locked = String(!owned);
+        const preview = new Image();
+        preview.alt = "";
+        const asset = getModelPreviewAsset(modelId, spec.name, spec.color);
+        preview.src = asset.url;
+        const label = document.createElement("span");
+        label.textContent = spec.name;
+        const priceTag = document.createElement("small");
+        priceTag.className = "shop-price-tag";
+        priceTag.textContent = owned
+          ? "✓ 已拥有 · 摆放"
+          : meta.tier === "milestone"
+            ? `🎮 ${meta.milestoneGame.name} / ⭐${meta.starPrice}`
+            : `🪙 ${meta.coinPrice}`;
+        card.append(preview, label, priceTag);
+        card.onclick = () => {
+          if (owned) {
+            drawer.close();
+            placePaperModel(modelId);
+            return;
+          }
+          const res = buyFurniture(book, modelId, meta.tier === "milestone");
+          if (res.ok) {
+            persist();
+            updateWalletHud();
+            drawer.close();
+            placePaperModel(modelId);
+          } else {
+            pullLog.hidden = false;
+            pullLog.textContent = `${spec.name}：${res.reason}（可去游乐屋赚币！）`;
+          }
+        };
+        library.append(card);
+      }
+      return;
+    }
+
+    if (!wake && drawerTab === "models") {
+      library.replaceChildren(buildDrawerTabs("models"));
 
       const filters = document.createElement("div");
       filters.className = "drawer-filters";
@@ -1253,11 +1481,19 @@ async function openLibrary(wake, drawerTab = "stickers", groupFilter = "全部")
 
       const orderedModels = Object.entries(PAPER_MODELS)
         .filter(([, spec]) => groupFilter === "全部" || (spec.furnGroup || "布景") === groupFilter)
-        .sort((a, b) => (b[1].batch || 0) - (a[1].batch || 0));
+        .sort((a, b) => {
+          const ua = isFurnitureUnlocked(book, a[0]) ? 1 : 0;
+          const ub = isFurnitureUnlocked(book, b[0]) ? 1 : 0;
+          if (ua !== ub) return ub - ua;
+          return (b[1].batch || 0) - (a[1].batch || 0);
+        });
       for (const [modelId, spec] of orderedModels) {
+        const owned = isFurnitureUnlocked(book, modelId);
+        const meta = getFurnitureMeta(modelId);
         const card = document.createElement("button");
         card.type = "button";
         card.className = "desk-card";
+        card.dataset.locked = String(!owned);
         const preview = new Image();
         preview.alt = "";
         const asset = getModelPreviewAsset(modelId, spec.name, spec.color);
@@ -1265,31 +1501,25 @@ async function openLibrary(wake, drawerTab = "stickers", groupFilter = "全部")
         const label = document.createElement("span");
         label.textContent = spec.name;
         card.append(preview, label);
+        if (!owned) {
+          const tag = document.createElement("small");
+          tag.className = "shop-price-tag";
+          tag.textContent = meta.tier === "milestone" ? `🔒 ⭐${meta.starPrice}` : `🔒 🪙${meta.coinPrice}`;
+          card.append(tag);
+        }
         library.append(card);
         card.onclick = () => {
-          const spot = floorRecord({ x: center.x + (Math.random() - .5) * 1.4, y: center.y + 1.0 + (Math.random() - .5) * 1.0 });
-          const record = {
-            id: uid(),
-            modelId,
-            name: spec.name,
-            category: spec.category,
-            purpose: spec.purpose,
-            color: spec.color,
-            surface: "paper",
-            x: clamp(spot.x, .12, .88),
-            y: clamp(spot.y, .12, .88),
-            scale: .85,
-            rotation: 0,
-            selfRotation: 0,
-            isModel: true
-          };
-          setAsset(record, asset);
+          if (!owned) {
+            const res = buyFurniture(book, modelId, meta.tier === "milestone");
+            if (!res.ok) {
+              void openLibrary(false, "shop", spec.furnGroup || "全部");
+              return;
+            }
+            persist();
+            updateWalletHud();
+          }
           drawer.close();
-          sceneModels().push(record);
-          const button = actor(record);
-          select(record);
-          changed(record);
-          button.focus({ preventScroll: true });
+          placePaperModel(modelId);
         };
       }
       return;
@@ -1299,21 +1529,7 @@ async function openLibrary(wake, drawerTab = "stickers", groupFilter = "全部")
     if (!current()) return;
     library.replaceChildren();
     if (!wake) {
-      const tabs = document.createElement("div");
-      tabs.className = "drawer-tabs";
-      const stickerTab = document.createElement("button");
-      stickerTab.type = "button";
-      stickerTab.className = "desk-pill";
-      stickerTab.textContent = "贴纸收藏";
-      stickerTab.setAttribute("aria-pressed", "true");
-      const modelTab = document.createElement("button");
-      modelTab.type = "button";
-      modelTab.className = "desk-pill";
-      modelTab.textContent = "纸模布景";
-      modelTab.setAttribute("aria-pressed", "false");
-      modelTab.onclick = () => { if (current()) void openLibrary(false, "models"); };
-      tabs.append(stickerTab, modelTab);
-      library.append(tabs);
+      library.append(buildDrawerTabs("stickers"));
     }
     if (!list.length) {
       const p = document.createElement("p");
@@ -1604,8 +1820,13 @@ function openSpirit(id) {
   lastInteractedSpiritId = id;
   focusedSpiritId = id;
   pauseAmbient();
+  const care = getSpiritCare(book, spirit);
+  const lvInfo = spiritLevelInfo(care.xp);
+  const avgStat = Math.round((care.hunger + care.mood + care.energy) / 3);
+  const moodBadge = avgStat >= 80 ? "干劲满满 ×1.5" : avgStat >= 60 ? "状态平稳 ×1.0" : "打盹发呆 ×0.8";
+
   el("spirit-name").textContent = spirit.name;
-  spiritTraitBadge.textContent = `主性格：${primaryTrait(spirit)}`;
+  spiritTraitBadge.textContent = `Lv.${lvInfo.level} · 主性格：${primaryTrait(spirit)} · ${moodBadge}`;
   spiritThumb.hidden = true;
   spiritThumb.removeAttribute("src");
   spiritThumb.alt = `${spirit.name}的贴纸剪影`;
@@ -1621,6 +1842,68 @@ function openSpirit(id) {
   card.dataset.spirit = id;
   const stats = spiritStatsPanel;
   stats.replaceChildren();
+
+  const careBox = document.createElement("div");
+  careBox.className = "spirit-care-box";
+  const careBars = [
+    ["羁绊", lvInfo.isMax ? 100 : Math.round(lvInfo.progress * 100)],
+    ["饱食", care.hunger],
+    ["心情", care.mood],
+    ["精力", care.energy]
+  ];
+  for (const [labelText, val] of careBars) {
+    const l = document.createElement("span");
+    l.textContent = labelText;
+    const m = document.createElement("meter");
+    m.max = 100;
+    m.value = val;
+    careBox.append(l, m);
+  }
+  const petRow = document.createElement("div");
+  petRow.className = "spirit-care-actions";
+  const petBtn = document.createElement("button");
+  petBtn.type = "button";
+  petBtn.className = "desk-pill";
+  petBtn.textContent = "🤚 摸摸头";
+  const careNote = document.createElement("small");
+  careNote.className = "spirit-care-note";
+  petBtn.onclick = () => {
+    const r = petSpirit(book, spirit);
+    persist();
+    updateWalletHud();
+    const resident = residents.find(x => x.id === spirit.id);
+    if (resident) {
+      resident.careAura = Boolean(getSpiritCare(book, spirit).aura);
+      resident.careHat = getSpiritCare(book, spirit).hat;
+      scene?.react(spirit.id, "like", { x: 0, y: 0 }, spirit.traits, "toy");
+      sync();
+    }
+    openSpirit(id);
+    const n = spiritStatsPanel.querySelector(".spirit-care-note");
+    if (n) n.textContent = r.xpGain ? `心情 +8 · 羁绊 +${r.xpGain}${r.leveledUp ? " · 升级啦！" : ""}` : "摸摸头好舒服～（今日抚摸经验已满）";
+  };
+  petRow.append(petBtn);
+  if (lvInfo.level >= 4) {
+    const hatSel = document.createElement("select");
+    hatSel.className = "spirit-hat-select";
+    hatSel.setAttribute("aria-label", "头饰");
+    hatSel.add(new Option("无头饰", "", false, !care.hat));
+    for (const h of HAT_CATALOG) {
+      if (lvInfo.level >= h.minLevel) {
+        const owned = care.ownedHats.includes(h.id);
+        hatSel.add(new Option(`${h.icon} ${h.name}${owned || !h.starPrice ? "" : ` (⭐${h.starPrice})`}`, h.id, false, care.hat === h.id));
+      }
+    }
+    hatSel.onchange = () => {
+      const r = equipHat(book, spirit, hatSel.value || null);
+      if (!r.ok) { careNote.textContent = r.reason; return; }
+      const resident = residents.find(x => x.id === spirit.id);
+      if (resident) { resident.careHat = getSpiritCare(book, spirit).hat; sync(); }
+      persist();
+      updateWalletHud();
+    };
+    petRow.append(hatSel);
+  }
   const traits = document.createElement("div");
   traits.className = "spirit-traits";
   for (const [trait, value] of Object.entries(spirit.traits)) {
@@ -1635,7 +1918,7 @@ function openSpirit(id) {
   const discovered = document.createElement("p");
   discovered.textContent = spirit.discoveries.length ? spirit.discoveries.map(({ kind, value, sentiment }) =>
     `${sentiment === "like" ? "喜欢" : "回避"}${kind === "face" ? expressions[value] : value}`).join(" · ") : "在它附近摆放贴纸，观察它的喜好。";
-  stats.append(traits, discovered);
+  stats.append(careBox, petRow, careNote, traits, discovered);
   stats.hidden = false;
 
   const request = document.createElement("section");
@@ -1657,7 +1940,87 @@ function openSpirit(id) {
   chatBtn.id = "spirit-chat-btn";
   chatBtn.textContent = "💬 聊聊";
   chatBtn.onclick = () => openChat(spirit);
-  card.append(request, chatBtn);
+
+  // Feed snacks row
+  const prog = ensureProgression(book);
+  const feedSec = document.createElement("div");
+  feedSec.className = "spirit-feed-row";
+  for (const sn of SNACK_CATALOG) {
+    const qty = prog.snacks[sn.id] || 0;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "desk-pill spirit-snack-btn";
+    btn.disabled = qty <= 0;
+    btn.textContent = `${sn.icon}${qty}`;
+    btn.title = `投喂 ${sn.name}（库存 ${qty}）`;
+    btn.onclick = () => {
+      const r = feedSpirit(book, spirit, sn.id);
+      if (!r.ok) return;
+      persist();
+      updateWalletHud();
+      const resident = residents.find(x => x.id === spirit.id);
+      if (resident) {
+        resident.careAura = Boolean(getSpiritCare(book, spirit).aura);
+        resident.careHat = getSpiritCare(book, spirit).hat;
+        scene?.react(spirit.id, "like", { x: 0, y: 0 }, spirit.traits, "food");
+        sync();
+      }
+      openSpirit(id);
+      const n = spiritStatsPanel.querySelector(".spirit-care-note");
+      if (n) n.textContent = `喂了${sn.name}！${r.loved ? "超喜欢 " : ""}羁绊 +${r.xpGain}${r.leveledUp ? " · 升级啦！" : ""}`;
+    };
+    feedSec.append(btn);
+  }
+
+  // Expedition control
+  const expBox = document.createElement("div");
+  expBox.className = "spirit-exp-box";
+  if (care.expedition) {
+    const leftMs = Math.max(0, care.expedition.endsAt - Date.now());
+    const expBtn = document.createElement("button");
+    expBtn.type = "button";
+    expBtn.className = "desk-pill";
+    expBtn.textContent = leftMs <= 0 ? "🎒 领取采风收获！" : `🧭 采风中 (${Math.ceil(leftMs / 60000)}m · 提前召回)`;
+    expBtn.onclick = () => {
+      const r = claimExpedition(book, spirit, true);
+      if (r.ok) {
+        persist();
+        updateWalletHud();
+        openSpirit(id);
+        const n = spiritStatsPanel.querySelector(".spirit-care-note");
+        if (n) n.textContent = r.postcard;
+      }
+    };
+    expBox.append(expBtn);
+  } else {
+    for (const tier of EXPEDITION_TIERS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "desk-pill spirit-exp-btn";
+      btn.textContent = `🧭 ${tier.name}`;
+      btn.disabled = care.energy < tier.energyCost;
+      btn.title = `消耗精力 ${tier.energyCost}`;
+      btn.onclick = () => {
+        const r = startExpedition(book, spirit, tier.id, world().name);
+        if (r.ok) { persist(); openSpirit(id); }
+      };
+      expBox.append(btn);
+    }
+  }
+
+  // Journal preview
+  const journalWrap = document.createElement("details");
+  journalWrap.className = "spirit-journal";
+  const jSum = document.createElement("summary");
+  jSum.textContent = `📖 成长手账 (${care.journal.length})`;
+  journalWrap.append(jSum);
+  for (const entry of care.journal.slice(0, 5)) {
+    const p = document.createElement("p");
+    p.textContent = `${entry.date} · ${entry.text}`;
+    journalWrap.append(p);
+  }
+
+  card.append(request, chatBtn, feedSec, expBox, journalWrap);
   const move = document.createElement("label");
   const destinations = document.createElement("select");
   destinations.setAttribute("aria-label", "搬家到");
@@ -1787,7 +2150,14 @@ closeSpiritBtn.addEventListener("click", () => closeSpiritHud());
 cover.addEventListener("click", () => void openCover());
 el("open-tasks").addEventListener("click", openTasks);
 el("chapter-label").addEventListener("click", openChapters);
-el("play-ecology").addEventListener("click", () => playEcology(world(), claimPrize));
+el("play-ecology").addEventListener("click", () => {
+  openArcadeHub({
+    book,
+    currentWorldId: world().id,
+    onStateChanged: () => { persist(); updateWalletHud(); },
+    onPlaceModel: id => { placePaperModel(id); }
+  });
+});
 el("prev-page").addEventListener("click", () => void turn(book.page - 1));
 el("next-page").addEventListener("click", () => void turn(book.page + 1));
 el("desk-add").addEventListener("click", () => void openLibrary(false));

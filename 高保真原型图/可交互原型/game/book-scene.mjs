@@ -1140,6 +1140,18 @@ export function createScene(stage, onLayout, onLost) {
               face.castShadow = false;
               return [mood, face];
             }));
+            const auraRing = new T.Mesh(
+              new T.RingGeometry(.29, .40, 24),
+              new T.MeshBasicMaterial({ color: "#ffe08a", transparent: true, opacity: .78, side: T.DoubleSide, depthWrite: false })
+            );
+            auraRing.rotation.x = -Math.PI / 2;
+            auraRing.position.set(0, .022, 0);
+            auraRing.visible = Boolean(record.careAura);
+            node.add(auraRing);
+            node.userData.auraRing = auraRing;
+            const hatCrown = disk(node, .13, .06, 0, .071 + h + .04, cardDepth * .5, "#f2c464", 12);
+            hatCrown.visible = Boolean(record.careHat);
+            node.userData.hatMesh = hatCrown;
           } else {
             const [w, h] = cardSize(record);
             const onFloor = record.surface !== "prop";
@@ -1186,8 +1198,11 @@ export function createScene(stage, onLayout, onLost) {
       }
       if (node.parent !== parent) parent.add(node);
       node.position.copy(localPoint(record, spirit));
-      if (spirit) node.userData.rest = node.position.clone();
-      else if (isModel) {
+      if (spirit) {
+        node.userData.rest = node.position.clone();
+        if (node.userData.auraRing) node.userData.auraRing.visible = Boolean(record.careAura);
+        if (node.userData.hatMesh) node.userData.hatMesh.visible = Boolean(record.careHat);
+      } else if (isModel) {
         const sc = record.scale || 1;
         node.scale.setScalar(sc);
         const angle = ((record.rotation || 0) + (record.selfRotation || 0)) * Math.PI / 180;

@@ -140,7 +140,8 @@ async function verifyBook(browser, origin) {
     }
     await button("星潮海岸").click();
     await page.locator('.book-shell[data-world="coast"][data-busy="false"]').waitFor();
-    await button("潮汐拾贝").click();
+    await page.locator("#play-ecology").click();
+    await page.locator("#ecology-game").waitFor({ state: "visible" });
     await button("关闭小游戏").click();
     await button("打开章节目录").click();
     await button("暖窗书房").click();
@@ -150,7 +151,8 @@ async function verifyBook(browser, origin) {
     await button("确认召唤").click();
     await page.getByRole("heading", { name: "胶卷精灵" }).waitFor();
     assert.ok((await state()).nextSpiritSummonAt > Date.now());
-    assert.equal(await page.getByRole("meter").count(), 3);
+    assert.equal(await page.locator(".spirit-traits meter").count(), 3);
+    assert.equal(await page.locator(".spirit-care-box meter").count(), 4);
     const spirit = (await state()).spirits.find(value => value.id === "resident");
     const { createSpirit, reactionFor } = await import("./game/book-data.mjs");
     assert.deepEqual(spirit, createSpirit({ stickerId: "resident", category: "器物", name: "胶卷精灵" }, "study"));
@@ -230,21 +232,63 @@ async function verifyBook(browser, origin) {
     await page.locator("#desk-selection").waitFor({ state: "visible" });
     await button("完成").click();
     await button("关闭家具列表").click();
+    await page.locator("#wallet-bar").waitFor({ state: "visible" });
     await button("添加贴纸").click();
-    await button("纸模布景").click();
-    await page.locator(".drawer-filters").getByRole("button", { name: "灯火" }).click();
-    await page.getByRole("button", { name: "百褶落地灯" }).click();
+    await page.getByRole("button", { name: "家具铺" }).click();
+    await page.getByRole("button", { name: /折纸盲盒单抽/ }).click();
+    assert.ok((await state()).progression.unlockedFurniture.length >= 1, "blind box pull should unlock at least 1 furniture");
+    await page.getByRole("button", { name: /立刻摆出/ }).click();
     await page.locator("#desk-selection").waitFor({ state: "visible" });
-    assert.ok((await state()).sceneModels.study.some(m => m.modelId === "floor_lamp"), "universal lamp model should be placed");
-    await button("完成").click();
-    await button("添加贴纸").click();
-    await button("纸模布景").click();
-    await page.locator(".drawer-filters").getByRole("button", { name: "绿植休闲" }).click();
-    await page.getByRole("button", { name: "胡桃木立式钢琴" }).click();
-    await page.locator("#desk-selection").waitFor({ state: "visible" });
-    assert.ok((await state()).sceneModels.study.some(m => m.modelId === "upright_piano"), "expanded universal piano model should be placed");
     await button("完成").click();
     await button("重置视角").click();
+
+    // Open Arcade Hub and verify all 20 Douyin mini-games render and launch cleanly
+    await page.locator("#play-ecology").click();
+    await page.locator("#ecology-game").waitFor({ state: "visible" });
+    assert.equal(await page.locator(".arcade-card").count(), 20, "arcade hub should list all 20 Douyin mini-games");
+    await page.locator('.arcade-card[data-game-id="catch_goose"]').click();
+    await page.locator(".mg-canvas").waitFor({ state: "visible" });
+    await page.getByRole("button", { name: /狂晃大盆/ }).click();
+    await page.getByRole("button", { name: "‹ 返回游乐屋" }).click();
+    await page.locator('.arcade-card[data-game-id="screw_jam"]').click();
+    await page.locator(".mg-screw-box").first().waitFor({ state: "visible" });
+    await page.locator("#ecology-game .desk-close").click();
+
+    const arcadeSmoke = await page.evaluate(async () => {
+      const { MINIGAME_CATALOG, recordMinigameResult } = await import("/game/progression.mjs");
+      const { MINIGAME_RUNNERS } = await import("/game/minigames/hub.mjs");
+      const broken = [];
+      for (const g of MINIGAME_CATALOG) {
+        const runner = MINIGAME_RUNNERS[g.id];
+        if (!runner) { broken.push(`missing:${g.id}`); continue; }
+        const host = document.createElement("div");
+        document.body.append(host);
+        const ctrl = new AbortController();
+        try {
+          runner(host, {
+            signal: ctrl.signal,
+            perk: { trait: "好奇", tier: 1, bonusHint: 1 },
+            setHud: () => {},
+            setProps: () => {},
+            cheer: () => {},
+            useVoucher: () => true,
+            finish: () => {}
+          });
+        } catch (err) {
+          broken.push(`err:${g.id}:${err.message}`);
+        } finally {
+          ctrl.abort();
+          host.remove();
+        }
+      }
+      const bookData = JSON.parse(localStorage.getItem("shiguang-popup-book-v1"));
+      const sim = recordMinigameResult(bookData, { gameId: "catch_goose", score: 240, stageCleared: 2, milestoneReached: true });
+      return { count: MINIGAME_CATALOG.length, broken, unlockedMilestone: sim.unlockedModel?.id || null };
+    });
+    assert.equal(arcadeSmoke.count, 20, "expected 20 mini-games in catalog");
+    assert.deepEqual(arcadeSmoke.broken, [], `broken mini-games: ${arcadeSmoke.broken.join(", ")}`);
+    assert.equal(arcadeSmoke.unlockedMilestone, "wooden_swing", "catch_goose milestone should unlock wooden_swing");
+
     const furnitureSummary = await page.evaluate(async () => {
       const T = await import("/game/vendor/three.module.js");
       const { PAPER_MODELS, buildPaperModel, getModelPreviewAsset } = await import("/game/paper-models.mjs");
@@ -269,6 +313,11 @@ async function verifyBook(browser, origin) {
     }
     await button("精灵 胶卷精灵").click({ force: true });
     await page.getByText(/喜欢.+回避/).waitFor();
+    await page.getByRole("button", { name: "🤚 摸摸头" }).click();
+    await page.locator(".spirit-snack-btn").first().click();
+    await page.getByRole("button", { name: "🧭 短途散步" }).click();
+    await page.getByRole("button", { name: /采风中/ }).click();
+    assert.ok((await state()).progression.spiritCare.resident.xp >= 30, "petting, feeding, and expedition should grant spirit bond XP");
     const wingGap = await page.evaluate(() => {
       const l = document.getElementById("spirit-wing-left").getBoundingClientRect();
       const r = document.getElementById("spirit-wing-right").getBoundingClientRect();
